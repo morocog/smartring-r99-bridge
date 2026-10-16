@@ -1,7 +1,6 @@
 package com.telat.smartring.r99.ui
 
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -18,13 +17,13 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Bedtime
 import androidx.compose.material.icons.filled.Bluetooth
 import androidx.compose.material.icons.filled.BluetoothConnected
 import androidx.compose.material.icons.filled.DirectionsRun
-import androidx.compose.material.icons.filled.FileDownload
 import androidx.compose.material.icons.filled.Favorite
+import androidx.compose.material.icons.filled.FileDownload
 import androidx.compose.material.icons.filled.LocalFireDepartment
-import androidx.compose.material.icons.filled.Bedtime
 import androidx.compose.material.icons.filled.Sync
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -49,7 +48,6 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.telat.smartring.r99.data.model.BleConnectionState
 import com.telat.smartring.r99.data.model.RingDashboardUiState
-import com.telat.smartring.r99.ui.theme.DarkBorder
 import com.telat.smartring.r99.ui.theme.DarkSurface
 import com.telat.smartring.r99.ui.theme.DarkSurfaceElevated
 import com.telat.smartring.r99.ui.theme.StatusAmber
@@ -85,7 +83,9 @@ fun RingDashboardScreen(
         HeaderSection(
             deviceName = uiState.deviceName,
             deviceAddress = uiState.deviceAddress,
-            connectionState = uiState.connectionState
+            connectionState = uiState.connectionState,
+            batteryPercent = uiState.batteryPercent,
+            isCharging = uiState.isCharging
         )
 
         // Banner de permisos de Health Connect si es necesario
@@ -93,11 +93,31 @@ fun RingDashboardScreen(
             HealthConnectBanner(onRequestPermissions = onRequestHealthPermissions)
         }
 
-        // Tarjeta destacada de Frecuencia Cardíaca
-        HeartRateCard(
-            bpm = uiState.currentHeartRate,
-            lastRecordedTime = uiState.lastHeartRateTime
-        )
+        // Fila de Signos Vitales: Frecuencia Cardíaca y SpO2
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            VitalCard(
+                title = "Pulso cardíaco",
+                value = if (uiState.currentHeartRate > 0) "${uiState.currentHeartRate}" else "--",
+                unit = "BPM",
+                lastRecordedTime = uiState.lastHeartRateTime,
+                icon = Icons.Default.Favorite,
+                accentColor = StatusRed,
+                modifier = Modifier.weight(1f)
+            )
+
+            VitalCard(
+                title = "Oxígeno SpO2",
+                value = if (uiState.currentSpo2 != null && uiState.currentSpo2!! > 0) "${uiState.currentSpo2}%" else "--",
+                unit = "Sat.",
+                lastRecordedTime = uiState.lastSpo2Time,
+                icon = Icons.Default.Favorite,
+                accentColor = TelatBlue,
+                modifier = Modifier.weight(1f)
+            )
+        }
 
         // Fila de tarjetas: Pasos y Calorías
         Row(
@@ -126,7 +146,8 @@ fun RingDashboardScreen(
         // Tarjeta de estado de actividad y sueño
         ActivityAndSleepCard(
             isMoving = uiState.isMoving,
-            sleepText = uiState.sleepStatusText
+            sleepText = uiState.sleepStatusText,
+            syncedSleepSessions = uiState.syncedSleepSessionsCount
         )
 
         // Controles de sincronización y configuración
@@ -147,7 +168,8 @@ fun RingDashboardScreen(
         // Mensaje de estado al pie
         StatusFooter(
             message = uiState.statusMessage,
-            lastSync = uiState.lastSyncTimestamp
+            lastSync = uiState.lastSyncTimestamp,
+            historyCount = uiState.syncedHistoryRecordsCount
         )
 
         Spacer(modifier = Modifier.height(16.dp))
@@ -158,7 +180,9 @@ fun RingDashboardScreen(
 private fun HeaderSection(
     deviceName: String,
     deviceAddress: String,
-    connectionState: BleConnectionState
+    connectionState: BleConnectionState,
+    batteryPercent: Int?,
+    isCharging: Boolean
 ) {
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -185,35 +209,52 @@ private fun HeaderSection(
                 )
             }
 
-            // Badge de estado de conexión
-            val (statusText, statusColor) = when (connectionState) {
-                BleConnectionState.CONNECTED -> "Conectado" to StatusGreen
-                BleConnectionState.CONNECTING, BleConnectionState.SYNCING -> "Sincronizando" to StatusAmber
-                BleConnectionState.SCANNING -> "Escaneando" to TelatBlue
-                BleConnectionState.DISCONNECTED -> "Desconectado" to TextMuted
-                BleConnectionState.ERROR -> "Error" to StatusRed
-            }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                // Batería si está disponible
+                if (batteryPercent != null) {
+                    Text(
+                        text = if (isCharging) "⚡ $batteryPercent%" else "🔋 $batteryPercent%",
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = if (batteryPercent > 20) StatusGreen else StatusAmber,
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(DarkSurfaceElevated)
+                            .padding(horizontal = 8.dp, vertical = 4.dp)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                }
 
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                modifier = Modifier
-                    .clip(RoundedCornerShape(20.dp))
-                    .background(DarkSurfaceElevated)
-                    .padding(horizontal = 10.dp, vertical = 6.dp)
-            ) {
-                Box(
+                // Badge de estado de conexión
+                val (statusText, statusColor) = when (connectionState) {
+                    BleConnectionState.CONNECTED -> "Conectado" to StatusGreen
+                    BleConnectionState.CONNECTING, BleConnectionState.SYNCING -> "Sincronizando" to StatusAmber
+                    BleConnectionState.SCANNING -> "Escaneando" to TelatBlue
+                    BleConnectionState.DISCONNECTED -> "Desconectado" to TextMuted
+                    BleConnectionState.ERROR -> "Error" to StatusRed
+                }
+
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
                     modifier = Modifier
-                        .size(8.dp)
-                        .clip(CircleShape)
-                        .background(statusColor)
-                )
-                Spacer(modifier = Modifier.width(6.dp))
-                Text(
-                    text = statusText,
-                    fontSize = 12.sp,
-                    fontWeight = FontWeight.Medium,
-                    color = statusColor
-                )
+                        .clip(RoundedCornerShape(20.dp))
+                        .background(DarkSurfaceElevated)
+                        .padding(horizontal = 10.dp, vertical = 6.dp)
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(8.dp)
+                            .clip(CircleShape)
+                            .background(statusColor)
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(
+                        text = statusText,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Medium,
+                        color = statusColor
+                    )
+                }
             }
         }
     }
@@ -235,7 +276,7 @@ private fun HealthConnectBanner(onRequestPermissions: () -> Unit) {
             )
             Spacer(modifier = Modifier.height(4.dp))
             Text(
-                text = "Health Connect requiere permisos para registrar pasos, pulso y calorías en tu Galaxy S24.",
+                text = "Health Connect requiere permisos para registrar pasos, sueño, pulso y SpO2 en tu Galaxy S24.",
                 style = MaterialTheme.typography.bodyMedium,
                 fontSize = 13.sp,
                 color = TextSecondary
@@ -254,72 +295,65 @@ private fun HealthConnectBanner(onRequestPermissions: () -> Unit) {
 }
 
 @Composable
-private fun HeartRateCard(bpm: Int, lastRecordedTime: Long?) {
+private fun VitalCard(
+    title: String,
+    value: String,
+    unit: String,
+    lastRecordedTime: Long?,
+    icon: ImageVector,
+    accentColor: Color,
+    modifier: Modifier = Modifier
+) {
     Card(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = modifier,
         colors = CardDefaults.cardColors(containerColor = DarkSurface),
         shape = RoundedCornerShape(16.dp)
     ) {
-        Row(
+        Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(20.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween
+                .padding(16.dp)
         ) {
-            Column {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(
-                        imageVector = Icons.Default.Favorite,
-                        contentDescription = "Frecuencia cardíaca",
-                        tint = StatusRed,
-                        modifier = Modifier.size(20.dp)
-                    )
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text(
-                        text = "Frecuencia Cardíaca",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = TextSecondary
-                    )
-                }
-                Spacer(modifier = Modifier.height(8.dp))
-                Row(verticalAlignment = Alignment.Bottom) {
-                    Text(
-                        text = if (bpm > 0) "$bpm" else "--",
-                        fontSize = 38.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = TextPrimary
-                    )
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text(
-                        text = "BPM",
-                        fontSize = 16.sp,
-                        color = TextMuted,
-                        modifier = Modifier.padding(bottom = 6.dp)
-                    )
-                }
-                lastRecordedTime?.let {
-                    val timeFormat = SimpleDateFormat("HH:mm:ss", Locale.getDefault())
-                    Text(
-                        text = "Última lectura: ${timeFormat.format(Date(it))}",
-                        fontSize = 11.sp,
-                        color = TextMuted
-                    )
-                }
-            }
-
-            Box(
-                modifier = Modifier
-                    .size(56.dp)
-                    .clip(CircleShape)
-                    .background(StatusRed.copy(alpha = 0.15f)),
-                contentAlignment = Alignment.Center
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween,
+                modifier = Modifier.fillMaxWidth()
             ) {
+                Text(
+                    text = title,
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontSize = 13.sp,
+                    color = TextSecondary
+                )
                 Icon(
-                    imageVector = Icons.Default.Favorite,
-                    contentDescription = null,
-                    tint = StatusRed,
-                    modifier = Modifier.size(28.dp)
+                    imageVector = icon,
+                    contentDescription = title,
+                    tint = accentColor,
+                    modifier = Modifier.size(18.dp)
+                )
+            }
+            Spacer(modifier = Modifier.height(8.dp))
+            Row(verticalAlignment = Alignment.Bottom) {
+                Text(
+                    text = value,
+                    fontSize = 28.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = TextPrimary
+                )
+                Spacer(modifier = Modifier.width(4.dp))
+                Text(
+                    text = unit,
+                    fontSize = 13.sp,
+                    color = TextMuted,
+                    modifier = Modifier.padding(bottom = 4.dp)
+                )
+            }
+            lastRecordedTime?.let {
+                val timeFormat = SimpleDateFormat("HH:mm:ss", Locale.getDefault())
+                Text(
+                    text = "Hora: ${timeFormat.format(Date(it))}",
+                    fontSize = 10.sp,
+                    color = TextMuted
                 )
             }
         }
@@ -370,41 +404,58 @@ private fun MetricCard(
 }
 
 @Composable
-private fun ActivityAndSleepCard(isMoving: Boolean, sleepText: String) {
+private fun ActivityAndSleepCard(
+    isMoving: Boolean,
+    sleepText: String,
+    syncedSleepSessions: Int
+) {
     Card(
         modifier = Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(containerColor = DarkSurface),
         shape = RoundedCornerShape(16.dp)
     ) {
-        Row(
+        Column(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(16.dp),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
+            verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            Column {
-                Text("Estado de actividad", fontSize = 12.sp, color = TextMuted)
-                Text(
-                    text = if (isMoving) "En movimiento (Zancada activa)" else "En reposo / Estático",
-                    fontSize = 14.sp,
-                    fontWeight = FontWeight.SemiBold,
-                    color = if (isMoving) StatusGreen else TextSecondary
-                )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column {
+                    Text("Estado de actividad", fontSize = 12.sp, color = TextMuted)
+                    Text(
+                        text = if (isMoving) "En movimiento (Zancada activa)" else "En reposo / Estático",
+                        fontSize = 14.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = if (isMoving) StatusGreen else TextSecondary
+                    )
+                }
+
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        imageVector = Icons.Default.Bedtime,
+                        contentDescription = "Sueño",
+                        tint = TelatYellow,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(
+                        text = sleepText,
+                        fontSize = 13.sp,
+                        color = TextSecondary
+                    )
+                }
             }
 
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(
-                    imageVector = Icons.Default.Bedtime,
-                    contentDescription = "Sueño",
-                    tint = TelatYellow,
-                    modifier = Modifier.size(18.dp)
-                )
-                Spacer(modifier = Modifier.width(6.dp))
+            if (syncedSleepSessions > 0) {
                 Text(
-                    text = sleepText,
-                    fontSize = 13.sp,
-                    color = TextSecondary
+                    text = "Sesiones de sueño registradas en Health Connect: $syncedSleepSessions",
+                    fontSize = 11.sp,
+                    color = TelatYellow
                 )
             }
         }
@@ -429,7 +480,7 @@ private fun ControlsSection(
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             Text(
-                text = "Control y Sincronización",
+                text = "Control y Sincronización YCBT",
                 style = MaterialTheme.typography.titleLarge,
                 fontSize = 15.sp,
                 color = TextPrimary
@@ -444,7 +495,7 @@ private fun ControlsSection(
             ) {
                 Icon(Icons.Default.Sync, contentDescription = null, modifier = Modifier.size(18.dp))
                 Spacer(modifier = Modifier.width(8.dp))
-                Text("Sincronizar ahora con Health Connect", fontWeight = FontWeight.SemiBold)
+                Text("Sincronizar historial con Samsung Health", fontWeight = FontWeight.SemiBold)
             }
 
             // Fila de botones secundarios
@@ -510,7 +561,7 @@ private fun ControlsSection(
 }
 
 @Composable
-private fun StatusFooter(message: String, lastSync: Long?) {
+private fun StatusFooter(message: String, lastSync: Long?, historyCount: Int) {
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -521,6 +572,13 @@ private fun StatusFooter(message: String, lastSync: Long?) {
             fontSize = 12.sp,
             color = TextSecondary
         )
+        if (historyCount > 0) {
+            Text(
+                text = "Registros históricos sincronizados: $historyCount",
+                fontSize = 11.sp,
+                color = StatusGreen
+            )
+        }
         lastSync?.let {
             val format = SimpleDateFormat("dd/MM/yyyy HH:mm:ss", Locale.getDefault())
             Text(

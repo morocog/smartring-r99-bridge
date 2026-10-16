@@ -7,7 +7,6 @@ import androidx.work.WorkerParameters
 import com.telat.smartring.r99.data.ble.RingBleManager
 import com.telat.smartring.r99.data.healthconnect.HealthConnectBridge
 import com.telat.smartring.r99.data.model.BleConnectionState
-import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -39,16 +38,21 @@ class RingSyncWorker(
         val workerScope = CoroutineScope(Dispatchers.IO + Job())
         val bleManager = RingBleManager(applicationContext, workerScope)
 
-        val syncFinished = CompletableDeferred<Boolean>()
         var lastBpm: Int? = null
+        var lastSpo2: Int? = null
         var lastSteps: Int? = null
         var lastCalories: Int? = null
         var lastDistance: Int? = null
 
-        // Escuchar telemetría
         val hrJob = workerScope.launch {
             bleManager.heartRateFlow.collect { sample ->
                 lastBpm = sample.bpm
+            }
+        }
+
+        val spo2Job = workerScope.launch {
+            bleManager.spo2Flow.collect { percent ->
+                lastSpo2 = percent
             }
         }
 
@@ -57,29 +61,46 @@ class RingSyncWorker(
                 lastSteps = sample.steps
                 lastCalories = sample.calories
                 lastDistance = sample.distanceMeters
-                // Si ya tenemos el bloque consolidado y el pulso, podemos dar por terminada la ventana
-                syncFinished.complete(true)
             }
         }
 
         return try {
             bleManager.startScan()
 
-            // Esperar conexión y sincronización con un timeout máximo de 60 segundos
-            withTimeoutOrNull(60_000L) {
-                // Esperar a que se conecte
+            // Esperar conexión con un timeout máximo de 45 segundos
+            val connected = withTimeoutOrNull(45_000L) {
                 while (bleManager.connectionState.value != BleConnectionState.CONNECTED) {
                     delay(500L)
                 }
+                true
+            } ?: false
 
-                // Enviar ping forzado
-                bleManager.sendSyncPing()
-
-                // Esperar respuesta o cumplir tiempo de lectura
-                syncFinished.await()
+            if (!connected) {
+                Log.w(TAG, "Timeout esperando conexión BLE con Smart Ring R99")
+                return Result.retry()
             }
 
-            // Escribir en Health Connect si se obtuvieron datos
+            // Descargar todo el historial acumulado en el anillo (YCBT flash memory)
+            val history = bleManager.syncAllHistory()
+            Log.i(TAG, "Sincronización de historial finalizada: ${history.totalCount} registros totales")
+
+            if (history.sportRecords.isNotEmpty()) {
+                healthBridge.writeSportBatch(history.sportRecords)
+            }
+
+            for (session in history.sleepSessions) {
+                healthBridge.writeSleepSession(session)
+            }
+
+            if (history.heartRateRecords.isNotEmpty()) {
+                healthBridge.writeHeartRateBatch(history.heartRateRecords)
+            }
+
+            if (history.spo2Records.isNotEmpty()) {
+                healthBridge.writeSpo2Batch(history.spo2Records)
+            }
+
+            // Guardar lecturas puntuales en tiempo real si no vinieron en lotes históricos
             val now = Instant.now()
             val thirtyMinutesAgo = now.minus(30, ChronoUnit.MINUTES)
 
@@ -87,20 +108,24 @@ class RingSyncWorker(
                 healthBridge.writeHeartRateSample(bpm, now)
             }
 
+            lastSpo2?.let { spo2 ->
+                healthBridge.writeOxygenSaturation(spo2, now)
+            }
+
             lastSteps?.let { steps ->
-                if (steps > 0) {
+                if (steps > 0 && history.sportRecords.isEmpty()) {
                     healthBridge.writeStepsWindow(steps.toLong(), thirtyMinutesAgo, now)
                 }
             }
 
             lastCalories?.let { cal ->
-                if (cal > 0) {
+                if (cal > 0 && history.sportRecords.isEmpty()) {
                     healthBridge.writeCalories(cal.toDouble(), thirtyMinutesAgo, now)
                 }
             }
 
             lastDistance?.let { dist ->
-                if (dist > 0) {
+                if (dist > 0 && history.sportRecords.isEmpty()) {
                     healthBridge.writeDistance(dist.toDouble(), thirtyMinutesAgo, now)
                 }
             }
@@ -112,6 +137,7 @@ class RingSyncWorker(
             Result.retry()
         } finally {
             hrJob.cancel()
+            spo2Job.cancel()
             stepsJob.cancel()
             bleManager.disconnect()
         }

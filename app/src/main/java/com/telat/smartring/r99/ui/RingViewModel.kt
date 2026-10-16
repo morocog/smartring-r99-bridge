@@ -14,7 +14,6 @@ import com.telat.smartring.r99.data.healthconnect.HealthConnectBridge
 import com.telat.smartring.r99.data.model.BleConnectionState
 import com.telat.smartring.r99.data.model.RingDashboardUiState
 import com.telat.smartring.r99.worker.RingSyncWorker
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -68,9 +67,9 @@ class RingViewModel(application: Application) : AndroidViewModel(application) {
                 val statusText = when (state) {
                     BleConnectionState.DISCONNECTED -> "Desconectado"
                     BleConnectionState.SCANNING -> "Buscando Smart Ring R99..."
-                    BleConnectionState.CONNECTING -> "Estableciendo conexión BLE..."
+                    BleConnectionState.CONNECTING -> "Estableciendo conexión BLE (YCBT)..."
                     BleConnectionState.CONNECTED -> "Conectado al anillo"
-                    BleConnectionState.SYNCING -> "Sincronizando telemetría..."
+                    BleConnectionState.SYNCING -> "Descargando historial de salud..."
                     BleConnectionState.ERROR -> "Error en módulo BLE"
                 }
                 _uiState.update {
@@ -96,7 +95,7 @@ class RingViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private fun observeTelemetry() {
-        // 1. Escuchar pulso cardíaco
+        // 1. Pulso cardíaco en tiempo real
         viewModelScope.launch {
             bleManager.heartRateFlow.collect { sample ->
                 _uiState.update {
@@ -114,14 +113,50 @@ class RingViewModel(application: Application) : AndroidViewModel(application) {
                     )
                 )
 
-                // Enviar inmediatamente a Health Connect si hay permisos
                 if (_uiState.value.hasHealthPermissions) {
                     healthConnectBridge.writeHeartRateSample(sample.bpm, Instant.ofEpochMilli(sample.timestamp))
                 }
             }
         }
 
-        // 2. Escuchar bloques consolidados de pasos
+        // 2. Saturación de oxígeno (SpO2)
+        viewModelScope.launch {
+            bleManager.spo2Flow.collect { percent ->
+                val now = System.currentTimeMillis()
+                _uiState.update {
+                    it.copy(
+                        currentSpo2 = percent,
+                        lastSpo2Time = now
+                    )
+                }
+
+                sessionLogs.add(
+                    CsvLogEntry(
+                        timestamp = now,
+                        metricType = "SPO2",
+                        value1 = "$percent%"
+                    )
+                )
+
+                if (_uiState.value.hasHealthPermissions) {
+                    healthConnectBridge.writeOxygenSaturation(percent, Instant.ofEpochMilli(now))
+                }
+            }
+        }
+
+        // 3. Nivel de batería del anillo
+        viewModelScope.launch {
+            bleManager.batteryFlow.collect { (battery, isCharging) ->
+                _uiState.update {
+                    it.copy(
+                        batteryPercent = battery,
+                        isCharging = isCharging
+                    )
+                }
+            }
+        }
+
+        // 4. Bloques de pasos en tiempo real
         viewModelScope.launch {
             bleManager.consolidatedStepsFlow.collect { sample ->
                 val now = System.currentTimeMillis()
@@ -155,7 +190,7 @@ class RingViewModel(application: Application) : AndroidViewModel(application) {
             }
         }
 
-        // 3. Ticks instantáneos de zancada (actualización visual reactiva)
+        // 5. Ticks instantáneos de zancada
         viewModelScope.launch {
             bleManager.instantStepFlow.collect {
                 _uiState.update {
@@ -164,7 +199,7 @@ class RingViewModel(application: Application) : AndroidViewModel(application) {
             }
         }
 
-        // 4. Estados de actividad y sueño
+        // 6. Actividad y sueño
         viewModelScope.launch {
             bleManager.activityStateFlow.collect { act ->
                 _uiState.update { it.copy(isMoving = act.isMoving) }
@@ -210,8 +245,36 @@ class RingViewModel(application: Application) : AndroidViewModel(application) {
 
     fun forceSyncNow() {
         if (_uiState.value.connectionState == BleConnectionState.CONNECTED) {
-            _uiState.update { it.copy(statusMessage = "Enviando ping de sincronización forzada...") }
-            bleManager.sendSyncPing()
+            viewModelScope.launch {
+                _uiState.update { it.copy(statusMessage = "Descargando historial YCBT del anillo...") }
+                val history = bleManager.syncAllHistory()
+
+                var totalWritten = 0
+                if (_uiState.value.hasHealthPermissions) {
+                    if (history.sportRecords.isNotEmpty()) {
+                        totalWritten += healthConnectBridge.writeSportBatch(history.sportRecords)
+                    }
+                    for (session in history.sleepSessions) {
+                        if (healthConnectBridge.writeSleepSession(session)) totalWritten++
+                    }
+                    if (history.heartRateRecords.isNotEmpty()) {
+                        totalWritten += healthConnectBridge.writeHeartRateBatch(history.heartRateRecords)
+                    }
+                    if (history.spo2Records.isNotEmpty()) {
+                        totalWritten += healthConnectBridge.writeSpo2Batch(history.spo2Records)
+                    }
+                }
+
+                val now = System.currentTimeMillis()
+                _uiState.update {
+                    it.copy(
+                        lastSyncTimestamp = now,
+                        syncedSleepSessionsCount = it.syncedSleepSessionsCount + history.sleepSessions.size,
+                        syncedHistoryRecordsCount = it.syncedHistoryRecordsCount + history.totalCount,
+                        statusMessage = "Sincronizados ${history.totalCount} registros del anillo ($totalWritten en Health Connect)"
+                    )
+                }
+            }
         } else {
             _uiState.update { it.copy(statusMessage = "Conectando al Smart Ring para sincronizar...") }
             bleManager.startScan()

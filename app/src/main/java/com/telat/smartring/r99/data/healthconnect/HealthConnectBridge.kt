@@ -7,11 +7,19 @@ import androidx.health.connect.client.PermissionController
 import androidx.health.connect.client.permission.HealthPermission
 import androidx.health.connect.client.records.DistanceRecord
 import androidx.health.connect.client.records.HeartRateRecord
+import androidx.health.connect.client.records.OxygenSaturationRecord
+import androidx.health.connect.client.records.SleepSessionRecord
 import androidx.health.connect.client.records.StepsRecord
 import androidx.health.connect.client.records.TotalCaloriesBurnedRecord
 import androidx.health.connect.client.records.metadata.Metadata
 import androidx.health.connect.client.units.Energy
 import androidx.health.connect.client.units.Length
+import androidx.health.connect.client.units.Percentage
+import com.telat.smartring.r99.data.ycbt.YcbtHeartRateRecord
+import com.telat.smartring.r99.data.ycbt.YcbtSleepSession
+import com.telat.smartring.r99.data.ycbt.YcbtSleepStageType
+import com.telat.smartring.r99.data.ycbt.YcbtSpo2Record
+import com.telat.smartring.r99.data.ycbt.YcbtSportRecord
 import java.time.Instant
 import java.time.ZoneOffset
 import java.time.temporal.ChronoUnit
@@ -30,7 +38,11 @@ class HealthConnectBridge(
             HealthPermission.getWritePermission(DistanceRecord::class),
             HealthPermission.getReadPermission(DistanceRecord::class),
             HealthPermission.getWritePermission(TotalCaloriesBurnedRecord::class),
-            HealthPermission.getReadPermission(TotalCaloriesBurnedRecord::class)
+            HealthPermission.getReadPermission(TotalCaloriesBurnedRecord::class),
+            HealthPermission.getWritePermission(SleepSessionRecord::class),
+            HealthPermission.getReadPermission(SleepSessionRecord::class),
+            HealthPermission.getWritePermission(OxygenSaturationRecord::class),
+            HealthPermission.getReadPermission(OxygenSaturationRecord::class)
         )
     }
 
@@ -173,6 +185,204 @@ class HealthConnectBridge(
         } catch (e: Exception) {
             Log.e(TAG, "Error insertando TotalCaloriesBurnedRecord: ${e.message}")
             false
+        }
+    }
+
+    /**
+     * Escribe una sesión completa de sueño con sus etapas (Deep, Light, REM, Awake) en Health Connect.
+     */
+    suspend fun writeSleepSession(session: YcbtSleepSession): Boolean {
+        val client = healthConnectClient ?: return false
+        if (!session.endTime.isAfter(session.startTime)) return false
+
+        val zoneOffset = ZoneOffset.systemDefault().rules.getOffset(session.startTime)
+
+        val stages = session.stages.mapNotNull { stage ->
+            val stageEnd = stage.startTime.plusSeconds(stage.durationSeconds)
+            if (stageEnd.isAfter(stage.startTime)) {
+                val stageConstant = when (stage.type) {
+                    YcbtSleepStageType.DEEP -> SleepSessionRecord.STAGE_TYPE_DEEP
+                    YcbtSleepStageType.LIGHT -> SleepSessionRecord.STAGE_TYPE_LIGHT
+                    YcbtSleepStageType.REM -> SleepSessionRecord.STAGE_TYPE_REM
+                    YcbtSleepStageType.AWAKE -> SleepSessionRecord.STAGE_TYPE_AWAKE
+                }
+                SleepSessionRecord.Stage(
+                    startTime = stage.startTime,
+                    endTime = stageEnd,
+                    stage = stageConstant
+                )
+            } else null
+        }
+
+        return try {
+            val record = SleepSessionRecord(
+                startTime = session.startTime,
+                startZoneOffset = zoneOffset,
+                endTime = session.endTime,
+                endZoneOffset = zoneOffset,
+                metadata = Metadata(),
+                title = "Sueño Smart Ring R99",
+                notes = "Sincronizado vía protocolo YCBT",
+                stages = stages
+            )
+
+            client.insertRecords(listOf(record))
+            Log.d(TAG, "SleepSessionRecord insertado con éxito en Health Connect (${stages.size} fases)")
+            true
+        } catch (e: Exception) {
+            Log.e(TAG, "Error insertando SleepSessionRecord: ${e.message}")
+            false
+        }
+    }
+
+    /**
+     * Escribe una medición puntual de saturación de oxígeno (SpO2) en Health Connect.
+     */
+    suspend fun writeOxygenSaturation(percent: Int, timestamp: Instant = Instant.now()): Boolean {
+        val client = healthConnectClient ?: return false
+        if (percent !in 70..100) return false
+
+        val zoneOffset = ZoneOffset.systemDefault().rules.getOffset(timestamp)
+
+        return try {
+            val record = OxygenSaturationRecord(
+                time = timestamp,
+                zoneOffset = zoneOffset,
+                percentage = Percentage(percent.toDouble()),
+                metadata = Metadata()
+            )
+
+            client.insertRecords(listOf(record))
+            Log.d(TAG, "OxygenSaturationRecord ($percent%) insertado con éxito en Health Connect")
+            true
+        } catch (e: Exception) {
+            Log.e(TAG, "Error insertando OxygenSaturationRecord: ${e.message}")
+            false
+        }
+    }
+
+    /**
+     * Escribe en lote las lecturas históricas de frecuencia cardíaca recuperadas de la memoria flash del anillo.
+     */
+    suspend fun writeHeartRateBatch(records: List<YcbtHeartRateRecord>): Int {
+        val client = healthConnectClient ?: return 0
+        if (records.isEmpty()) return 0
+
+        val hcRecords = records.map { r ->
+            val startTime = r.timestamp.minus(1, ChronoUnit.SECONDS)
+            val zoneOffset = ZoneOffset.systemDefault().rules.getOffset(r.timestamp)
+            HeartRateRecord(
+                startTime = startTime,
+                startZoneOffset = zoneOffset,
+                endTime = r.timestamp,
+                endZoneOffset = zoneOffset,
+                samples = listOf(
+                    HeartRateRecord.Sample(
+                        time = r.timestamp,
+                        beatsPerMinute = r.bpm.toLong()
+                    )
+                ),
+                metadata = Metadata()
+            )
+        }
+
+        return try {
+            client.insertRecords(hcRecords)
+            Log.i(TAG, "Lote de ${hcRecords.size} registros de pulso insertados en Health Connect")
+            hcRecords.size
+        } catch (e: Exception) {
+            Log.e(TAG, "Error insertando lote de pulso: ${e.message}")
+            0
+        }
+    }
+
+    /**
+     * Escribe en lote los intervalos históricos de pasos, distancia y calorías recuperados del anillo.
+     */
+    suspend fun writeSportBatch(records: List<YcbtSportRecord>): Int {
+        val client = healthConnectClient ?: return 0
+        if (records.isEmpty()) return 0
+
+        var insertedCount = 0
+        for (r in records) {
+            if (r.endTime.isAfter(r.startTime)) {
+                val zoneOffset = ZoneOffset.systemDefault().rules.getOffset(r.startTime)
+                val items = mutableListOf<androidx.health.connect.client.records.Record>()
+
+                if (r.steps > 0) {
+                    items.add(
+                        StepsRecord(
+                            count = r.steps.toLong(),
+                            startTime = r.startTime,
+                            startZoneOffset = zoneOffset,
+                            endTime = r.endTime,
+                            endZoneOffset = zoneOffset,
+                            metadata = Metadata()
+                        )
+                    )
+                }
+                if (r.distanceMeters > 0) {
+                    items.add(
+                        DistanceRecord(
+                            distance = Length.meters(r.distanceMeters.toDouble()),
+                            startTime = r.startTime,
+                            startZoneOffset = zoneOffset,
+                            endTime = r.endTime,
+                            endZoneOffset = zoneOffset,
+                            metadata = Metadata()
+                        )
+                    )
+                }
+                if (r.caloriesKcal > 0) {
+                    items.add(
+                        TotalCaloriesBurnedRecord(
+                            energy = Energy.kilocalories(r.caloriesKcal.toDouble()),
+                            startTime = r.startTime,
+                            startZoneOffset = zoneOffset,
+                            endTime = r.endTime,
+                            endZoneOffset = zoneOffset,
+                            metadata = Metadata()
+                        )
+                    )
+                }
+
+                if (items.isNotEmpty()) {
+                    try {
+                        client.insertRecords(items)
+                        insertedCount++
+                    } catch (e: Exception) {
+                        Log.w(TAG, "Error insertando intervalo deportivo: ${e.message}")
+                    }
+                }
+            }
+        }
+        return insertedCount
+    }
+
+    /**
+     * Escribe en lote las lecturas de SpO2 recuperadas del anillo.
+     */
+    suspend fun writeSpo2Batch(records: List<YcbtSpo2Record>): Int {
+        val client = healthConnectClient ?: return 0
+        if (records.isEmpty()) return 0
+
+        val hcRecords = records.filter { it.percent in 70..100 }.map { r ->
+            val zoneOffset = ZoneOffset.systemDefault().rules.getOffset(r.timestamp)
+            OxygenSaturationRecord(
+                time = r.timestamp,
+                zoneOffset = zoneOffset,
+                percentage = Percentage(r.percent.toDouble()),
+                metadata = Metadata()
+            )
+        }
+
+        return try {
+            client.insertRecords(hcRecords)
+            Log.i(TAG, "Lote de ${hcRecords.size} registros de SpO2 insertados en Health Connect")
+            hcRecords.size
+        } catch (e: Exception) {
+            Log.e(TAG, "Error insertando lote de SpO2: ${e.message}")
+            0
         }
     }
 }
