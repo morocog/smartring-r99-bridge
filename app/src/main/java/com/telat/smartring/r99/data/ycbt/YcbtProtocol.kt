@@ -31,8 +31,15 @@ object YcbtConstants {
     const val QUERY_SLEEP: Byte = 0x04          // Responde con tramas 0x13 (longitud variable)
     const val QUERY_HEART_RATE: Byte = 0x06     // Responde con tramas 0x15 (registros de 6 bytes)
     const val QUERY_BLOOD_PRESSURE: Byte = 0x08 // Responde con tramas 0x17 (registros de 8 bytes)
+    const val QUERY_COMBINED_VITALS: Byte = 0x09 // Registro combinado de 20 bytes (pasos acumulados, spo2, pulso, temp)
     const val QUERY_SPO2: Byte = 0x1A.toByte()  // Responde con tramas 0x22 (registros de 6 bytes)
     const val QUERY_TEMP: Byte = 0x1E.toByte()  // Responde con tramas 0x26 (registros de 7 bytes)
+
+    // Modos de medición puntual bajo demanda (AppControl 0x03, Cmd 0x2F)
+    const val MEASURE_MODE_HEART_RATE: Byte = 0x00
+    const val MEASURE_MODE_BP: Byte = 0x01
+    const val MEASURE_MODE_SPO2: Byte = 0x02
+    const val MEASURE_MODE_TEMP: Byte = 0x04
 
     // Clave de bloque terminal y ACK obligatorio
     const val TERMINAL_BLOCK: Byte = 0x80.toByte()

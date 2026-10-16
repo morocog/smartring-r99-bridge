@@ -218,11 +218,20 @@ object YcbtHealthDecoder {
         return when (cmd.toInt() and 0xFF) {
             0x00 -> {
                 // Pasos, calorías y distancia
+                // Protocolo YCBT: payload de 6 bytes con campos u16 LE, o de 12 bytes con u32 LE
                 if (payload.size >= 12) {
                     val steps = YcbtUtils.readU32LE(payload, 0)
                     val cal = YcbtUtils.readU32LE(payload, 4)
                     val dist = YcbtUtils.readU32LE(payload, 8)
                     YcbtDecodedEvent.RealtimeStatus(steps, cal, dist)
+                } else if (payload.size >= 6) {
+                    val steps = YcbtUtils.readU16LE(payload, 0).toLong()
+                    val dist = YcbtUtils.readU16LE(payload, 2).toLong()
+                    val cal = YcbtUtils.readU16LE(payload, 4).toLong()
+                    YcbtDecodedEvent.RealtimeStatus(steps, cal, dist)
+                } else if (payload.size >= 2) {
+                    val steps = YcbtUtils.readU16LE(payload, 0).toLong()
+                    YcbtDecodedEvent.RealtimeStatus(steps, 0, 0)
                 } else null
             }
             0x01 -> {
@@ -250,4 +259,42 @@ object YcbtHealthDecoder {
             else -> null
         }
     }
+
+    /**
+     * Decodifica registros combinados de salud (query 0x09, registros de 20 bytes)
+     * Layout: [ts:u32 LE][steps:u16 LE@4][hr:1B@6][sys:1B@7][dia:1B@8][spo2:1B@9]...
+     */
+    fun decodeCombinedVitals(buffer: ByteArray): List<YcbtCombinedVitalsRecord> {
+        val records = mutableListOf<YcbtCombinedVitalsRecord>()
+        val stride = 20
+        var offset = 0
+
+        while (offset + stride <= buffer.size) {
+            val tsSec = YcbtUtils.readU32LE(buffer, offset)
+            val steps = YcbtUtils.readU16LE(buffer, offset + 4)
+            val hr = buffer[offset + 6].toInt() and 0xFF
+            val spo2 = buffer[offset + 9].toInt() and 0xFF
+
+            if (tsSec > 0) {
+                records.add(
+                    YcbtCombinedVitalsRecord(
+                        timestamp = YcbtUtils.toInstant(tsSec),
+                        steps = steps,
+                        heartRate = if (hr in 35..230) hr else null,
+                        spo2 = if (spo2 in 70..100) spo2 else null
+                    )
+                )
+            }
+            offset += stride
+        }
+        return records
+    }
 }
+
+data class YcbtCombinedVitalsRecord(
+    val timestamp: Instant,
+    val steps: Int,
+    val heartRate: Int?,
+    val spo2: Int?
+)
+

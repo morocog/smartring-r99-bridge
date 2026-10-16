@@ -48,6 +48,8 @@ data class RingDashboardUiState(
     val sleepStatusText: String = "En reposo",
     val syncedSleepSessionsCount: Int = 0,
     val syncedHistoryRecordsCount: Int = 0,
+    val isMeasuringHeartRate: Boolean = false,
+    val isMeasuringSpo2: Boolean = false,
     val isPeriodicSyncEnabled: Boolean = true,
     val isHealthConnectAvailable: Boolean = false,
     val hasHealthPermissions: Boolean = false,

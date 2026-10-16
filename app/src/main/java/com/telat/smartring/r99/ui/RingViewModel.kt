@@ -13,7 +13,9 @@ import com.telat.smartring.r99.data.export.CsvLogEntry
 import com.telat.smartring.r99.data.healthconnect.HealthConnectBridge
 import com.telat.smartring.r99.data.model.BleConnectionState
 import com.telat.smartring.r99.data.model.RingDashboardUiState
+import com.telat.smartring.r99.data.ycbt.YcbtConstants
 import com.telat.smartring.r99.worker.RingSyncWorker
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -326,6 +328,58 @@ class RingViewModel(application: Application) : AndroidViewModel(application) {
             _uiState.update { it.copy(statusMessage = "Error al exportar CSV") }
         }
         return result
+    }
+
+    fun triggerHeartRateMeasurement() {
+        if (_uiState.value.connectionState != BleConnectionState.CONNECTED) {
+            _uiState.update { it.copy(statusMessage = "Conecta el anillo antes de medir el pulso") }
+            return
+        }
+        if (_uiState.value.isMeasuringHeartRate) return
+
+        viewModelScope.launch {
+            _uiState.update {
+                it.copy(
+                    isMeasuringHeartRate = true,
+                    statusMessage = "Midiendo pulso cardíaco en tiempo real... (Sensor PPG activo)"
+                )
+            }
+            bleManager.startSpotMeasurement(YcbtConstants.MEASURE_MODE_HEART_RATE)
+            delay(20_000)
+            bleManager.stopSpotMeasurement(YcbtConstants.MEASURE_MODE_HEART_RATE)
+            _uiState.update {
+                it.copy(
+                    isMeasuringHeartRate = false,
+                    statusMessage = "Medición de pulso completada y sincronizada"
+                )
+            }
+        }
+    }
+
+    fun triggerSpo2Measurement() {
+        if (_uiState.value.connectionState != BleConnectionState.CONNECTED) {
+            _uiState.update { it.copy(statusMessage = "Conecta el anillo antes de medir oxígeno") }
+            return
+        }
+        if (_uiState.value.isMeasuringSpo2) return
+
+        viewModelScope.launch {
+            _uiState.update {
+                it.copy(
+                    isMeasuringSpo2 = true,
+                    statusMessage = "Midiendo SpO2 (Sensor óptico infrarrojo)... Mantén la mano en reposo"
+                )
+            }
+            bleManager.startSpotMeasurement(YcbtConstants.MEASURE_MODE_SPO2)
+            delay(25_000)
+            bleManager.stopSpotMeasurement(YcbtConstants.MEASURE_MODE_SPO2)
+            _uiState.update {
+                it.copy(
+                    isMeasuringSpo2 = false,
+                    statusMessage = "Medición de SpO2 completada y guardada en Samsung Health"
+                )
+            }
+        }
     }
 
     override fun onCleared() {

@@ -290,7 +290,25 @@ class RingBleManager(
         // 4. Descarga de historial de saturación de oxígeno (SpO2)
         val spo2Bytes = queryHistoryBlock(YcbtConstants.QUERY_SPO2)
         val spo2Records = YcbtHealthDecoder.decodeSpo2(spo2Bytes)
-        Log.i(TAG, "Historial de SpO2 descargado: ${spo2Records.size} muestras")
+        Log.i(TAG, "Historial de SpO2 dedicado descargado: ${spo2Records.size} muestras")
+
+        // 5. Descarga de registros combinados (05 09: Vitals diarios, SpO2, Pasos)
+        val combinedBytes = queryHistoryBlock(YcbtConstants.QUERY_COMBINED_VITALS)
+        val combinedRecords = YcbtHealthDecoder.decodeCombinedVitals(combinedBytes)
+        Log.i(TAG, "Historial combinado (05 09) descargado: ${combinedRecords.size} registros")
+
+        val combinedSpo2 = combinedRecords.mapNotNull { rec ->
+            rec.spo2?.let { com.telat.smartring.r99.data.ycbt.YcbtSpo2Record(rec.timestamp, it) }
+        }
+        val allSpo2 = (spo2Records + combinedSpo2).distinctBy { it.timestamp }
+
+        // Si los registros combinados tienen pasos acumulados del día, actualizar telemetría
+        val maxStepsCombined = combinedRecords.maxOfOrNull { it.steps } ?: 0
+        if (maxStepsCombined > 0) {
+            coroutineScope.launch {
+                _consolidatedStepsFlow.emit(StepsSample(steps = maxStepsCombined, calories = 0, distanceMeters = 0))
+            }
+        }
 
         _connectionState.value = BleConnectionState.CONNECTED
 
@@ -298,8 +316,20 @@ class RingBleManager(
             sportRecords = sportRecords,
             sleepSessions = sleepSessions,
             heartRateRecords = hrRecords,
-            spo2Records = spo2Records
+            spo2Records = allSpo2
         )
+    }
+
+    fun startSpotMeasurement(mode: Byte) {
+        Log.i(TAG, "Iniciando medicion puntual (mode 0x${Integer.toHexString(mode.toInt() and 0xFF)})...")
+        val cmd = YcbtCommands.triggerMeasurement(enable = true, mode = mode)
+        sendYcbtCommand(cmd)
+    }
+
+    fun stopSpotMeasurement(mode: Byte) {
+        Log.i(TAG, "Deteniendo medicion puntual (mode 0x${Integer.toHexString(mode.toInt() and 0xFF)})...")
+        val cmd = YcbtCommands.triggerMeasurement(enable = false, mode = mode)
+        sendYcbtCommand(cmd)
     }
 
     private suspend fun queryHistoryBlock(queryCmd: Byte): ByteArray {
