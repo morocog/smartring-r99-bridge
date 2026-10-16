@@ -21,6 +21,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.telat.smartring.r99.R
 import com.telat.smartring.r99.ui.theme.DarkBackground
 import com.telat.smartring.r99.ui.theme.SmartRingR99BridgeTheme
 import com.telat.smartring.r99.ui.theme.TelatBlue

@@ -8,17 +8,18 @@ import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.activity.viewModels
-import androidx.core.content.ContextCompat
+import androidx.lifecycle.ViewModelProvider
 import androidx.health.connect.client.PermissionController
 import com.telat.smartring.r99.data.healthconnect.HealthConnectBridge
 import com.telat.smartring.r99.ui.RingDashboardScreen
 import com.telat.smartring.r99.ui.RingViewModel
 import com.telat.smartring.r99.ui.theme.SmartRingR99BridgeTheme
 
+import androidx.core.content.ContextCompat
+
 class MainActivity : ComponentActivity() {
 
-    private val viewModel: RingViewModel by viewModels()
+    private lateinit var viewModel: RingViewModel
 
     // Contrato oficial para solicitud de permisos de Health Connect
     private val healthPermissionLauncher = registerForActivityResult(
@@ -46,6 +47,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        viewModel = ViewModelProvider(this)[RingViewModel::class.java]
 
         checkAndRequestBlePermissions()
 

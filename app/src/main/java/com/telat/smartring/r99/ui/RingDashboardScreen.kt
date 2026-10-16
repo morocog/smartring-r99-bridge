@@ -21,10 +21,10 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Bluetooth
 import androidx.compose.material.icons.filled.BluetoothConnected
 import androidx.compose.material.icons.filled.DirectionsRun
-import androidx.compose.material.icons.filled.Download
+import androidx.compose.material.icons.filled.FileDownload
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.LocalFireDepartment
-import androidx.compose.material.icons.filled.Nightlight
+import androidx.compose.material.icons.filled.Bedtime
 import androidx.compose.material.icons.filled.Sync
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -393,7 +393,7 @@ private fun ActivityAndSleepCard(isMoving: Boolean, sleepText: String) {
 
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Icon(
-                    imageVector = Icons.Default.Nightlight,
+                    imageVector = Icons.Default.Bedtime,
                     contentDescription = "Sueño",
                     tint = TelatYellow,
                     modifier = Modifier.size(18.dp)
@@ -467,7 +467,7 @@ private fun ControlsSection(
                     shape = RoundedCornerShape(10.dp),
                     modifier = Modifier.weight(1f)
                 ) {
-                    Icon(Icons.Default.Download, contentDescription = null, modifier = Modifier.size(16.dp), tint = TextSecondary)
+                    Icon(Icons.Default.FileDownload, contentDescription = null, modifier = Modifier.size(16.dp), tint = TextSecondary)
                     Spacer(modifier = Modifier.width(4.dp))
                     Text("Exportar CSV", fontSize = 13.sp, color = TextPrimary)
                 }
