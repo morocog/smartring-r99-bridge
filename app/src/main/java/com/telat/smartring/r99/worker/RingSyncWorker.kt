@@ -30,8 +30,8 @@ class RingSyncWorker(
         Log.i(TAG, "Iniciando ciclo periódico de sincronización cada 30 min...")
 
         val healthBridge = HealthConnectBridge(applicationContext)
-        if (!healthBridge.isAvailable || !healthBridge.hasAllPermissions()) {
-            Log.w(TAG, "Health Connect no disponible o sin permisos otorgados")
+        if (!healthBridge.isAvailable) {
+            Log.w(TAG, "Health Connect no disponible en el sistema")
             return Result.failure()
         }
 

@@ -1,23 +1,29 @@
 package com.telat.smartring.r99
 
 import android.Manifest
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
+import android.util.Log
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.lifecycle.ViewModelProvider
+import androidx.core.content.ContextCompat
+import androidx.health.connect.client.HealthConnectClient
 import androidx.health.connect.client.PermissionController
+import androidx.lifecycle.ViewModelProvider
 import com.telat.smartring.r99.data.healthconnect.HealthConnectBridge
 import com.telat.smartring.r99.ui.RingDashboardScreen
 import com.telat.smartring.r99.ui.RingViewModel
 import com.telat.smartring.r99.ui.theme.SmartRingR99BridgeTheme
 
-import androidx.core.content.ContextCompat
-
 class MainActivity : ComponentActivity() {
+
+    companion object {
+        private const val TAG = "MainActivity"
+    }
 
     private lateinit var viewModel: RingViewModel
 
@@ -25,10 +31,13 @@ class MainActivity : ComponentActivity() {
     private val healthPermissionLauncher = registerForActivityResult(
         PermissionController.createRequestPermissionResultContract()
     ) { grantedPermissions ->
-        if (grantedPermissions.containsAll(HealthConnectBridge.REQUIRED_PERMISSIONS)) {
-            Toast.makeText(this, "Permisos de Health Connect concedidos", Toast.LENGTH_SHORT).show()
+        Log.i(TAG, "Resultado de permisos Health Connect: ${grantedPermissions.size} concedidos")
+        if (grantedPermissions.isNotEmpty()) {
+            Toast.makeText(this, "Permisos de Health Connect actualizados con éxito", Toast.LENGTH_SHORT).show()
         } else {
-            Toast.makeText(this, "Algunos permisos de Health Connect fueron omitidos", Toast.LENGTH_SHORT).show()
+            // Si la ventana no devolvió permisos o fue cancelada, abrimos directamente los Ajustes de Health Connect
+            Toast.makeText(this, "Abriendo configuración de Health Connect...", Toast.LENGTH_SHORT).show()
+            openHealthConnectSettings()
         }
         viewModel.checkHealthConnectStatus()
     }
@@ -41,7 +50,7 @@ class MainActivity : ComponentActivity() {
         if (allGranted) {
             viewModel.startScanningAndConnect()
         } else {
-            Toast.makeText(this, "Se requieren permisos Bluetooth para detectar el anillo", Toast.LENGTH_LONG).show()
+            Toast.makeText(this, "Se requieren permisos de Dispositivos Cercanos (Bluetooth) para comunicarse con el anillo", Toast.LENGTH_LONG).show()
         }
     }
 
@@ -57,6 +66,9 @@ class MainActivity : ComponentActivity() {
                     viewModel = viewModel,
                     onRequestHealthPermissions = {
                         requestHealthConnectPermissions()
+                    },
+                    onOpenHealthSettings = {
+                        openHealthConnectSettings()
                     }
                 )
             }
@@ -101,12 +113,48 @@ class MainActivity : ComponentActivity() {
         if (!viewModel.healthConnectBridge.isAvailable) {
             Toast.makeText(
                 this,
-                "Health Connect no está habilitado o requiere actualización en los Ajustes del Galaxy S24",
+                "Health Connect no está habilitado en este dispositivo. Abriendo Ajustes...",
                 Toast.LENGTH_LONG
             ).show()
+            openHealthConnectSettings()
             return
         }
 
-        healthPermissionLauncher.launch(HealthConnectBridge.REQUIRED_PERMISSIONS)
+        try {
+            healthPermissionLauncher.launch(HealthConnectBridge.REQUIRED_PERMISSIONS)
+        } catch (e: Exception) {
+            Log.e(TAG, "Excepción lanzando contrato de Health Connect: ${e.message}", e)
+            openHealthConnectSettings()
+        }
+    }
+
+    fun openHealthConnectSettings() {
+        try {
+            // Android 14+ directo a la gestión de permisos de esta app en Health Connect
+            val intent = Intent("android.health.connect.action.MANAGE_HEALTH_PERMISSIONS").apply {
+                putExtra(Intent.EXTRA_PACKAGE_NAME, packageName)
+            }
+            startActivity(intent)
+        } catch (e: Exception) {
+            try {
+                // Fallback a pantalla general de Health Connect
+                val intent = Intent(HealthConnectClient.ACTION_HEALTH_CONNECT_SETTINGS)
+                startActivity(intent)
+            } catch (e2: Exception) {
+                try {
+                    // Fallback a Samsung Health si está instalado
+                    val pm = packageManager
+                    val intent = pm.getLaunchIntentForPackage("com.sec.android.app.shealth")
+                    if (intent != null) {
+                        startActivity(intent)
+                        Toast.makeText(this, "En Samsung Health: Ajustes > Health Connect > Conceder permisos", Toast.LENGTH_LONG).show()
+                    } else {
+                        Toast.makeText(this, "Abre Ajustes > Seguridad y privacidad > Health Connect en tu Galaxy S24", Toast.LENGTH_LONG).show()
+                    }
+                } catch (e3: Exception) {
+                    Toast.makeText(this, "Abre Ajustes > Seguridad y privacidad > Health Connect en tu Galaxy S24", Toast.LENGTH_LONG).show()
+                }
+            }
+        }
     }
 }

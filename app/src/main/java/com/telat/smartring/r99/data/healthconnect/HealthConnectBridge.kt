@@ -30,20 +30,25 @@ class HealthConnectBridge(
     companion object {
         private const val TAG = "HealthConnectBridge"
 
-        val REQUIRED_PERMISSIONS = setOf(
+        val WRITE_PERMISSIONS = setOf(
             HealthPermission.getWritePermission(StepsRecord::class),
-            HealthPermission.getReadPermission(StepsRecord::class),
             HealthPermission.getWritePermission(HeartRateRecord::class),
-            HealthPermission.getReadPermission(HeartRateRecord::class),
             HealthPermission.getWritePermission(DistanceRecord::class),
-            HealthPermission.getReadPermission(DistanceRecord::class),
             HealthPermission.getWritePermission(TotalCaloriesBurnedRecord::class),
-            HealthPermission.getReadPermission(TotalCaloriesBurnedRecord::class),
             HealthPermission.getWritePermission(SleepSessionRecord::class),
+            HealthPermission.getWritePermission(OxygenSaturationRecord::class)
+        )
+
+        val READ_PERMISSIONS = setOf(
+            HealthPermission.getReadPermission(StepsRecord::class),
+            HealthPermission.getReadPermission(HeartRateRecord::class),
+            HealthPermission.getReadPermission(DistanceRecord::class),
+            HealthPermission.getReadPermission(TotalCaloriesBurnedRecord::class),
             HealthPermission.getReadPermission(SleepSessionRecord::class),
-            HealthPermission.getWritePermission(OxygenSaturationRecord::class),
             HealthPermission.getReadPermission(OxygenSaturationRecord::class)
         )
+
+        val REQUIRED_PERMISSIONS = WRITE_PERMISSIONS + READ_PERMISSIONS
     }
 
     val isAvailable: Boolean
@@ -53,10 +58,25 @@ class HealthConnectBridge(
         if (isAvailable) HealthConnectClient.getOrCreate(context) else null
     }
 
+    suspend fun getGrantedPermissions(): Set<String> {
+        val client = healthConnectClient ?: return emptySet()
+        return try {
+            client.permissionController.getGrantedPermissions()
+        } catch (e: Exception) {
+            Log.w(TAG, "Error consultando permisos concedidos: ${e.message}")
+            emptySet()
+        }
+    }
+
+    suspend fun hasWritePermissions(): Boolean {
+        val granted = getGrantedPermissions()
+        return granted.any { it.contains("WRITE") }
+    }
+
     suspend fun hasAllPermissions(): Boolean {
-        val client = healthConnectClient ?: return false
-        val granted = client.permissionController.getGrantedPermissions()
-        return granted.containsAll(REQUIRED_PERMISSIONS)
+        val granted = getGrantedPermissions()
+        // En Android 14 consideramos listo el puente si los permisos de escritura requeridos están concedidos
+        return granted.containsAll(WRITE_PERMISSIONS)
     }
 
     /**

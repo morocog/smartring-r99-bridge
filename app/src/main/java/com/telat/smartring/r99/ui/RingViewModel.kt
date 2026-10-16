@@ -50,12 +50,18 @@ class RingViewModel(application: Application) : AndroidViewModel(application) {
     fun checkHealthConnectStatus() {
         val available = healthConnectBridge.isAvailable
         viewModelScope.launch {
-            val hasPerms = if (available) healthConnectBridge.hasAllPermissions() else false
+            val granted = if (available) healthConnectBridge.getGrantedPermissions() else emptySet()
+            val hasWritePerms = granted.any { it.contains("WRITE") }
+            val hasAllWritePerms = granted.containsAll(HealthConnectBridge.WRITE_PERMISSIONS)
             _uiState.update {
                 it.copy(
                     isHealthConnectAvailable = available,
-                    hasHealthPermissions = hasPerms,
-                    statusMessage = if (hasPerms) "Health Connect listo y vinculado" else "Se requieren permisos de Health Connect"
+                    hasHealthPermissions = hasWritePerms,
+                    statusMessage = when {
+                        hasAllWritePerms -> "Health Connect vinculado y activo"
+                        hasWritePerms -> "Health Connect parcialmente concedido (${granted.size} permisos)"
+                        else -> "Se requieren permisos en Health Connect"
+                    }
                 )
             }
         }
@@ -113,7 +119,8 @@ class RingViewModel(application: Application) : AndroidViewModel(application) {
                     )
                 )
 
-                if (_uiState.value.hasHealthPermissions) {
+                // Intentar siempre escribir en Health Connect si está disponible
+                if (healthConnectBridge.isAvailable) {
                     healthConnectBridge.writeHeartRateSample(sample.bpm, Instant.ofEpochMilli(sample.timestamp))
                 }
             }
@@ -138,7 +145,7 @@ class RingViewModel(application: Application) : AndroidViewModel(application) {
                     )
                 )
 
-                if (_uiState.value.hasHealthPermissions) {
+                if (healthConnectBridge.isAvailable) {
                     healthConnectBridge.writeOxygenSaturation(percent, Instant.ofEpochMilli(now))
                 }
             }
@@ -180,7 +187,7 @@ class RingViewModel(application: Application) : AndroidViewModel(application) {
                     )
                 )
 
-                if (_uiState.value.hasHealthPermissions) {
+                if (healthConnectBridge.isAvailable) {
                     val instantNow = Instant.ofEpochMilli(now)
                     val windowStart = instantNow.minus(30, ChronoUnit.MINUTES)
                     healthConnectBridge.writeStepsWindow(sample.steps.toLong(), windowStart, instantNow)
@@ -250,7 +257,7 @@ class RingViewModel(application: Application) : AndroidViewModel(application) {
                 val history = bleManager.syncAllHistory()
 
                 var totalWritten = 0
-                if (_uiState.value.hasHealthPermissions) {
+                if (healthConnectBridge.isAvailable) {
                     if (history.sportRecords.isNotEmpty()) {
                         totalWritten += healthConnectBridge.writeSportBatch(history.sportRecords)
                     }
@@ -266,12 +273,20 @@ class RingViewModel(application: Application) : AndroidViewModel(application) {
                 }
 
                 val now = System.currentTimeMillis()
+                val syncMsg = if (totalWritten > 0) {
+                    "Sincronizados ${history.totalCount} registros del anillo ($totalWritten en Samsung Health)"
+                } else if (history.totalCount > 0) {
+                    "Recibidos ${history.totalCount} registros del anillo. Concede permisos en Health Connect para guardar"
+                } else {
+                    "Anillo al día (sin nuevos registros pendientes en memoria)"
+                }
+
                 _uiState.update {
                     it.copy(
                         lastSyncTimestamp = now,
                         syncedSleepSessionsCount = it.syncedSleepSessionsCount + history.sleepSessions.size,
                         syncedHistoryRecordsCount = it.syncedHistoryRecordsCount + history.totalCount,
-                        statusMessage = "Sincronizados ${history.totalCount} registros del anillo ($totalWritten en Health Connect)"
+                        statusMessage = syncMsg
                     )
                 }
             }

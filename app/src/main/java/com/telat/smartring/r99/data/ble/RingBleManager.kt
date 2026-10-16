@@ -133,8 +133,8 @@ class RingBleManager(
         override fun onScanResult(callbackType: Int, result: ScanResult?) {
             result?.device?.let { device ->
                 val name = device.name ?: result.scanRecord?.deviceName
-                if (name != null && name.startsWith(DEVICE_NAME_PREFIX, ignoreCase = true)) {
-                    Log.i(TAG, "Smart Ring detectado: $name [${device.address}]")
+                if (name != null && name.contains(DEVICE_NAME_PREFIX, ignoreCase = true)) {
+                    Log.i(TAG, "Smart Ring detectado en escaneo: $name [${device.address}]")
                     stopScan()
                     connectToDevice(device)
                 }
@@ -149,9 +149,31 @@ class RingBleManager(
     }
 
     fun startScan() {
-        val scanner = bluetoothAdapter?.bluetoothLeScanner
-        if (scanner == null || !bluetoothAdapter.isEnabled) {
+        if (bluetoothAdapter == null || !bluetoothAdapter.isEnabled) {
             Log.w(TAG, "Bluetooth no disponible o apagado")
+            _connectionState.value = BleConnectionState.ERROR
+            return
+        }
+
+        // 1. Revisar si el anillo ya está emparejado/vinculado en los Ajustes de Bluetooth de One UI
+        val bonded = try {
+            bluetoothAdapter.bondedDevices?.firstOrNull { device ->
+                val dName = device.name
+                dName != null && dName.contains(DEVICE_NAME_PREFIX, ignoreCase = true)
+            }
+        } catch (e: Exception) {
+            null
+        }
+
+        if (bonded != null) {
+            Log.i(TAG, "Smart Ring detectado en dispositivos vinculados del sistema: ${bonded.name} [${bonded.address}]")
+            connectToDevice(bonded)
+            return
+        }
+
+        val scanner = bluetoothAdapter.bluetoothLeScanner
+        if (scanner == null) {
+            Log.w(TAG, "Escáner BLE no disponible")
             _connectionState.value = BleConnectionState.ERROR
             return
         }

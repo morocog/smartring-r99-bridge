@@ -24,6 +24,7 @@ import androidx.compose.material.icons.filled.DirectionsRun
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.FileDownload
 import androidx.compose.material.icons.filled.LocalFireDepartment
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Sync
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -66,7 +67,8 @@ import java.util.Locale
 @Composable
 fun RingDashboardScreen(
     viewModel: RingViewModel,
-    onRequestHealthPermissions: () -> Unit
+    onRequestHealthPermissions: () -> Unit,
+    onOpenHealthSettings: () -> Unit
 ) {
     val uiState by viewModel.uiState.collectAsState()
     val scrollState = rememberScrollState()
@@ -88,9 +90,14 @@ fun RingDashboardScreen(
             isCharging = uiState.isCharging
         )
 
-        // Banner de permisos de Health Connect si es necesario
+        // Banner de permisos y vinculación de Health Connect
         if (!uiState.hasHealthPermissions) {
-            HealthConnectBanner(onRequestPermissions = onRequestHealthPermissions)
+            HealthConnectBanner(
+                onRequestPermissions = onRequestHealthPermissions,
+                onOpenSettings = onOpenHealthSettings
+            )
+        } else {
+            HealthConnectConnectedBadge(onOpenSettings = onOpenHealthSettings)
         }
 
         // Fila de Signos Vitales: Frecuencia Cardíaca y SpO2
@@ -162,7 +169,8 @@ fun RingDashboardScreen(
                 }
             },
             onTogglePeriodicSync = { viewModel.togglePeriodicSync(it) },
-            onExportCsv = { viewModel.exportSessionCsv() }
+            onExportCsv = { viewModel.exportSessionCsv() },
+            onOpenHealthSettings = onOpenHealthSettings
         )
 
         // Mensaje de estado al pie
@@ -261,7 +269,50 @@ private fun HeaderSection(
 }
 
 @Composable
-private fun HealthConnectBanner(onRequestPermissions: () -> Unit) {
+private fun HealthConnectConnectedBadge(onOpenSettings: () -> Unit) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = DarkSurfaceElevated),
+        shape = RoundedCornerShape(12.dp)
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 14.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Box(
+                    modifier = Modifier
+                        .size(8.dp)
+                        .clip(CircleShape)
+                        .background(StatusGreen)
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(
+                    text = "Health Connect vinculado con Samsung Health",
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Medium,
+                    color = StatusGreen
+                )
+            }
+            OutlinedButton(
+                onClick = onOpenSettings,
+                shape = RoundedCornerShape(8.dp),
+                modifier = Modifier.height(30.dp)
+            ) {
+                Text("Ajustes", fontSize = 11.sp, color = TextSecondary)
+            }
+        }
+    }
+}
+
+@Composable
+private fun HealthConnectBanner(
+    onRequestPermissions: () -> Unit,
+    onOpenSettings: () -> Unit
+) {
     Card(
         modifier = Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(containerColor = DarkSurfaceElevated),
@@ -269,26 +320,45 @@ private fun HealthConnectBanner(onRequestPermissions: () -> Unit) {
     ) {
         Column(modifier = Modifier.padding(14.dp)) {
             Text(
-                text = "Vincular con Samsung Health",
+                text = "Vincular con Health Connect & Samsung Health",
                 style = MaterialTheme.typography.titleLarge,
                 fontSize = 15.sp,
                 color = TelatOrange
             )
-            Spacer(modifier = Modifier.height(4.dp))
+            Spacer(modifier = Modifier.height(6.dp))
             Text(
-                text = "Health Connect requiere permisos para registrar pasos, sueño, pulso y SpO2 en tu Galaxy S24.",
+                text = "Para que tus pasos, sueño y pulso aparezcan en Samsung Health o Google Fit, debes activar los permisos en Health Connect de tu Galaxy S24.",
                 style = MaterialTheme.typography.bodyMedium,
                 fontSize = 13.sp,
                 color = TextSecondary
             )
-            Spacer(modifier = Modifier.height(10.dp))
-            Button(
-                onClick = onRequestPermissions,
-                colors = ButtonDefaults.buttonColors(containerColor = TelatOrange),
-                shape = RoundedCornerShape(8.dp),
-                modifier = Modifier.fillMaxWidth()
+            Spacer(modifier = Modifier.height(4.dp))
+            Text(
+                text = "💡 En Samsung Health: Ve a Ajustes > Conexión de salud / Health Connect > Activa la sincronización con Samsung Health.",
+                fontSize = 11.sp,
+                color = TelatYellow
+            )
+            Spacer(modifier = Modifier.height(12.dp))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                Text("Autorizar en Health Connect", fontWeight = FontWeight.SemiBold)
+                Button(
+                    onClick = onRequestPermissions,
+                    colors = ButtonDefaults.buttonColors(containerColor = TelatOrange),
+                    shape = RoundedCornerShape(8.dp),
+                    modifier = Modifier.weight(1.2f)
+                ) {
+                    Text("Conceder permisos", fontWeight = FontWeight.SemiBold, fontSize = 12.sp)
+                }
+
+                OutlinedButton(
+                    onClick = onOpenSettings,
+                    shape = RoundedCornerShape(8.dp),
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Text("Abrir Ajustes", fontSize = 12.sp, color = TextPrimary)
+                }
             }
         }
     }
@@ -468,7 +538,8 @@ private fun ControlsSection(
     onForceSync: () -> Unit,
     onToggleConnect: () -> Unit,
     onTogglePeriodicSync: (Boolean) -> Unit,
-    onExportCsv: () -> Unit
+    onExportCsv: () -> Unit,
+    onOpenHealthSettings: () -> Unit
 ) {
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -501,7 +572,7 @@ private fun ControlsSection(
             // Fila de botones secundarios
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(10.dp)
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 OutlinedButton(
                     onClick = onToggleConnect,
@@ -512,17 +583,27 @@ private fun ControlsSection(
                     val text = if (uiState.connectionState == BleConnectionState.CONNECTED) "Desconectar" else "Conectar"
                     Icon(icon, contentDescription = null, modifier = Modifier.size(16.dp), tint = TextSecondary)
                     Spacer(modifier = Modifier.width(4.dp))
-                    Text(text, fontSize = 13.sp, color = TextPrimary)
+                    Text(text, fontSize = 12.sp, color = TextPrimary)
+                }
+
+                OutlinedButton(
+                    onClick = onOpenHealthSettings,
+                    shape = RoundedCornerShape(10.dp),
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Icon(Icons.Default.Settings, contentDescription = null, modifier = Modifier.size(16.dp), tint = TextSecondary)
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text("Ajustes Salud", fontSize = 12.sp, color = TextPrimary)
                 }
 
                 OutlinedButton(
                     onClick = onExportCsv,
                     shape = RoundedCornerShape(10.dp),
-                    modifier = Modifier.weight(1f)
+                    modifier = Modifier.weight(0.9f)
                 ) {
                     Icon(Icons.Default.FileDownload, contentDescription = null, modifier = Modifier.size(16.dp), tint = TextSecondary)
                     Spacer(modifier = Modifier.width(4.dp))
-                    Text("Exportar CSV", fontSize = 13.sp, color = TextPrimary)
+                    Text("CSV", fontSize = 12.sp, color = TextPrimary)
                 }
             }
 
