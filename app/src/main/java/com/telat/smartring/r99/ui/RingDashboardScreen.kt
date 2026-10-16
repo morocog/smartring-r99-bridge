@@ -56,6 +56,7 @@ import com.telat.smartring.r99.ui.theme.StatusGreen
 import com.telat.smartring.r99.ui.theme.StatusRed
 import com.telat.smartring.r99.ui.theme.TelatBlue
 import com.telat.smartring.r99.ui.theme.TelatOrange
+import com.telat.smartring.r99.ui.theme.TelatYellow
 import com.telat.smartring.r99.ui.theme.TextMuted
 import com.telat.smartring.r99.ui.theme.TextPrimary
 import com.telat.smartring.r99.ui.theme.TextSecondary

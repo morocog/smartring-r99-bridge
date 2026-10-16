@@ -9,6 +9,7 @@ import androidx.health.connect.client.records.DistanceRecord
 import androidx.health.connect.client.records.HeartRateRecord
 import androidx.health.connect.client.records.StepsRecord
 import androidx.health.connect.client.records.TotalCaloriesBurnedRecord
+import androidx.health.connect.client.records.metadata.Metadata
 import androidx.health.connect.client.units.Energy
 import androidx.health.connect.client.units.Length
 import java.time.Instant
@@ -66,7 +67,8 @@ class HealthConnectBridge(
                 startZoneOffset = zoneOffset,
                 endTime = timestamp,
                 endZoneOffset = zoneOffset,
-                samples = listOf(sample)
+                samples = listOf(sample),
+                metadata = Metadata.EMPTY
             )
 
             client.insertRecords(listOf(record))
@@ -97,7 +99,8 @@ class HealthConnectBridge(
                 startTime = startTime,
                 startZoneOffset = zoneOffset,
                 endTime = endTime,
-                endZoneOffset = zoneOffset
+                endZoneOffset = zoneOffset,
+                metadata = Metadata.EMPTY
             )
 
             client.insertRecords(listOf(record))
@@ -128,7 +131,8 @@ class HealthConnectBridge(
                 startTime = startTime,
                 startZoneOffset = zoneOffset,
                 endTime = endTime,
-                endZoneOffset = zoneOffset
+                endZoneOffset = zoneOffset,
+                metadata = Metadata.EMPTY
             )
 
             client.insertRecords(listOf(record))
@@ -159,7 +163,8 @@ class HealthConnectBridge(
                 startTime = startTime,
                 startZoneOffset = zoneOffset,
                 endTime = endTime,
-                endZoneOffset = zoneOffset
+                endZoneOffset = zoneOffset,
+                metadata = Metadata.EMPTY
             )
 
             client.insertRecords(listOf(record))

@@ -33,6 +33,7 @@ jobs:
 
       - name: Compilar APK Debug
         run: |
+          set -o pipefail
           gradle assembleDebug --stacktrace --no-daemon 2>&1 | tee gradle_output.log
 
       - name: Subir APK generado como artefacto
@@ -40,13 +41,14 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: SmartRing-R99-Bridge-Debug-APK
-          path: app/build/outputs/apk/debug/app-debug.apk
+          path: app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
           retention-days: 14
 
-      - name: Subir log de compilacion completo
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: Gradle-Build-Log
-          path: gradle_output.log
-          retention-days: 7
+      - name: Resumen de error en caso de fallo
+        if: failure()
+        run: |
+          echo "### ⚠️ Error en compilación de Gradle" >> $GITHUB_STEP_SUMMARY
+          echo '```text' >> $GITHUB_STEP_SUMMARY
+          tail -n 80 gradle_output.log >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
