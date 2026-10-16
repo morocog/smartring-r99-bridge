@@ -513,8 +513,8 @@ private fun InteractiveVitalCard(
 
 @Composable
 private fun StepsMetricCard(
-    steps: Long,
-    goal: Long = 10000,
+    steps: Int,
+    goal: Int = 10000,
     modifier: Modifier = Modifier
 ) {
     Card(
@@ -582,8 +582,8 @@ private fun StepsMetricCard(
 
 @Composable
 private fun CaloriesMetricCard(
-    calories: Long,
-    distanceMeters: Long,
+    calories: Int,
+    distanceMeters: Int,
     modifier: Modifier = Modifier
 ) {
     Card(
