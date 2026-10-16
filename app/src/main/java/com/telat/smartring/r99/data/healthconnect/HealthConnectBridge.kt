@@ -68,7 +68,7 @@ class HealthConnectBridge(
                 endTime = timestamp,
                 endZoneOffset = zoneOffset,
                 samples = listOf(sample),
-                metadata = Metadata.EMPTY
+                metadata = Metadata()
             )
 
             client.insertRecords(listOf(record))
@@ -100,7 +100,7 @@ class HealthConnectBridge(
                 startZoneOffset = zoneOffset,
                 endTime = endTime,
                 endZoneOffset = zoneOffset,
-                metadata = Metadata.EMPTY
+                metadata = Metadata()
             )
 
             client.insertRecords(listOf(record))
@@ -132,7 +132,7 @@ class HealthConnectBridge(
                 startZoneOffset = zoneOffset,
                 endTime = endTime,
                 endZoneOffset = zoneOffset,
-                metadata = Metadata.EMPTY
+                metadata = Metadata()
             )
 
             client.insertRecords(listOf(record))
@@ -164,7 +164,7 @@ class HealthConnectBridge(
                 startZoneOffset = zoneOffset,
                 endTime = endTime,
                 endZoneOffset = zoneOffset,
-                metadata = Metadata.EMPTY
+                metadata = Metadata()
             )
 
             client.insertRecords(listOf(record))

@@ -48,6 +48,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.telat.smartring.r99.data.model.BleConnectionState
+import com.telat.smartring.r99.data.model.RingDashboardUiState
 import com.telat.smartring.r99.ui.theme.DarkBorder
 import com.telat.smartring.r99.ui.theme.DarkSurface
 import com.telat.smartring.r99.ui.theme.DarkSurfaceElevated
