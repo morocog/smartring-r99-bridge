@@ -31,9 +31,9 @@ jobs:
         run: |
           yes | sdkmanager --licenses || true
 
-      - name: Compilar APK Debug con log detallado
+      - name: Compilar APK Debug
         run: |
-          gradle assembleDebug --stacktrace --no-daemon
+          gradle assembleDebug --stacktrace --no-daemon 2>&1 | tee gradle_output.log
 
       - name: Subir APK generado como artefacto
         if: success()
@@ -43,12 +43,10 @@ jobs:
           path: app/build/outputs/apk/debug/app-debug.apk
           retention-days: 14
 
-      - name: Subir reportes de compilación si falla
-        if: failure()
+      - name: Subir log de compilacion completo
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: Build-Failure-Reports
-          path: |
-            app/build/reports/
-            **/build/reports/
+          name: Gradle-Build-Log
+          path: gradle_output.log
           retention-days: 7
