@@ -561,7 +561,7 @@ private fun StepsMetricCard(
 
             val progress = (steps.toFloat() / goal.toFloat()).coerceIn(0f, 1f)
             LinearProgressIndicator(
-                progress = { progress },
+                progress = progress,
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(6.dp)
