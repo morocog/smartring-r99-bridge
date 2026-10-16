@@ -51,7 +51,7 @@ Este proyecto incluye el flujo de automatización listo en `.github/workflows/bu
    git add .
    git commit -m "feat: Smart Ring R99 Bridge & Health Connect inicial"
    git branch -M main
-   git remote add origin https://github.com/TU_USUARIO/smartring-r99-bridge.git
+   git remote add origin https://github.com/morocog/smartring-r99-bridge.git
    git push -u origin main
    ```
 2. Abre tu repositorio en GitHub desde tu computadora o desde el navegador de tu Galaxy S24.
