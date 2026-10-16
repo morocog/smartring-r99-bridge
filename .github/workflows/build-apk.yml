@@ -56,17 +56,6 @@ jobs:
           set -o pipefail
           gradle assembleDebug --stacktrace --no-daemon 2>&1 | tee gradle_output.log
 
-      - name: Guardar APK en repositorio para descarga directa
-        if: success()
-        run: |
-          mkdir -p apk_output
-          cp app/build/outputs/apk/debug/*.apk apk_output/app-debug.apk
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add apk_output/app-debug.apk
-          git commit -m "build: actualizar APK v1.0.2 compilado" || true
-          git push origin main || true
-
       - name: Subir APK generado como artefacto
         if: success()
         uses: actions/upload-artifact@v4
@@ -76,6 +65,18 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+      - name: Guardar APK en repositorio para descarga directa
+        if: success()
+        continue-on-error: true
+        run: |
+          mkdir -p apk_output
+          cp app/build/outputs/apk/debug/*.apk apk_output/app-debug.apk
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add -f apk_output/app-debug.apk || true
+          git commit -m "build: actualizar APK v1.0.2 compilado" || true
+          git push origin main || true
+
       - name: Resumen de error en caso de fallo
         if: failure()
         run: |
@@ -83,6 +84,6 @@ jobs:
           tail -n 120 gradle_output.log > apk_output/build_error.log
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add apk_output/build_error.log
+          git add -f apk_output/build_error.log || true
           git commit -m "build: reportar log de error en compilacion" || true
           git push origin main || true
