@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">Smart Ring R99 Bridge</string>
+    <string name="health_connect_rationale">Esta aplicación lee y escribe tus métricas del Smart Ring R99 (pasos, frecuencia cardíaca, calorías y distancia) directamente en Health Connect para sincronizarlas con Samsung Health de manera 100% privada y local sin intermediarios en la nube.</string>
+</resources>

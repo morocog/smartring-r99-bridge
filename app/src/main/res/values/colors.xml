@@ -1,0 +1,8 @@
+<resources>
+    <color name="black">#FF121212</color>
+    <color name="white">#FFFFFFFF</color>
+    <color name="telat_blue">#3284C6</color>
+    <color name="telat_orange">#EB5B27</color>
+    <color name="dark_background">#1A1A1E</color>
+    <color name="card_surface">#24242A</color>
+</resources>
