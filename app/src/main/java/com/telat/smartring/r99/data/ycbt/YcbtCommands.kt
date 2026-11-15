@@ -45,9 +45,9 @@ object YcbtCommands {
         val cadence = intervalMinutes.coerceIn(30, 120).toByte()
         val payload = byteArrayOf(0x01, cadence) // {enable=1, interval=30m}
 
+        // Se excluye 0x1c (Presión Arterial) debido a que el hardware del R99 lo rechaza con 0xFC (no soportado)
         return listOf(
             YcbtFrameBuilder.build(YcbtConstants.GROUP_SETTING, 0x0c, payload), // Frecuencia cardíaca
-            YcbtFrameBuilder.build(YcbtConstants.GROUP_SETTING, 0x1c, payload), // Presión arterial
             YcbtFrameBuilder.build(YcbtConstants.GROUP_SETTING, 0x20, payload), // Temperatura
             YcbtFrameBuilder.build(YcbtConstants.GROUP_SETTING, 0x26, payload)  // Saturación de oxígeno (SpO2)
         )
@@ -67,6 +67,16 @@ object YcbtCommands {
     fun getDeviceInfo(): ByteArray {
         val payload = byteArrayOf(0x47, 0x43)
         return YcbtFrameBuilder.build(YcbtConstants.GROUP_GET, 0x00, payload)
+    }
+
+    /**
+     * Consulta el mapa de funciones de hardware y sensores soportados por el firmware
+     * (YCBTClient.getDeviceSupportFunction / Group 0x02, Cmd 0x01 / dataType 513).
+     * Requiere payload ASCII "GF" (0x47, 0x46) según descompilación de SmartHealth.
+     */
+    fun getDeviceSupportFunction(): ByteArray {
+        val payload = byteArrayOf(0x47, 0x46)
+        return YcbtFrameBuilder.build(YcbtConstants.GROUP_GET, YcbtConstants.CMD_GET_DEVICE_SUPPORT_FUNCTION, payload)
     }
 
     /**

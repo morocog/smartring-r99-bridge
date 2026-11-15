@@ -1,5 +1,6 @@
 package com.telat.smartring.r99.data.ycbt
 
+import android.util.Log
 import java.time.Instant
 import java.util.UUID
 
@@ -36,8 +37,13 @@ object YcbtConstants {
     const val QUERY_TEMP: Byte = 0x1E.toByte()  // Responde con tramas 0x26 (registros de 7 bytes)
 
     // Opcodes específicos de temperatura y control del SDK SmartHealth (Yucheng)
+    const val CMD_GET_DEVICE_SUPPORT_FUNCTION: Byte = 0x01 // Group 0x02, Cmd 0x01 (dataType 513)
     const val CMD_GET_REAL_TEMP: Byte = 0x0E        // Group 0x02, Cmd 0x0E (dataType 526)
     const val CMD_APP_TEMP_MEASURE: Byte = 0x18     // Group 0x03, Cmd 0x18 (dataType 792)
+
+    // Opcodes de control del dispositivo (Group 0x04 - DevControl)
+    const val CMD_DEV_MEASURE_RESULT: Byte = 0x0E      // Group 0x04, Cmd 0x0E (dataType 1038)
+    const val CMD_DEV_MEASURE_STATUS_RESULTS: Byte = 0x13 // Group 0x04, Cmd 0x13 (dataType 1043)
 
     // Opcodes de telemetría continua (Group 0x06 - Real)
     const val REAL_UPLOAD_HEART: Byte = 0x01        // Group 0x06, Cmd 0x01 (dataType 1537)
@@ -58,6 +64,13 @@ object YcbtConstants {
     const val MEASURE_MODE_SPO2: Byte = 0x02
     const val MEASURE_MODE_TEMP: Byte = 0x04
 
+    // Códigos de error estándar YCBT (según YCBTClientImpl.isError)
+    const val ERROR_UNSUPPORTED_CMD: Byte = 0xFB.toByte() // 251
+    const val ERROR_UNSUPPORTED_KEY: Byte = 0xFC.toByte() // 252
+    const val ERROR_INVALID_LENGTH: Byte = 0xFD.toByte()  // 253
+    const val ERROR_INVALID_DATA: Byte = 0xFE.toByte()    // 254
+    const val ERROR_CRC16_FAIL: Byte = 0xFF.toByte()      // 255
+
     // Clave de bloque terminal y ACK obligatorio
     const val TERMINAL_BLOCK: Byte = 0x80.toByte()
     const val ACK_SUCCESS: Byte = 0x00
@@ -71,6 +84,21 @@ data class YcbtFrame(
     val cmd: Byte,
     val payload: ByteArray
 ) {
+    val isErrorCode: Boolean
+        get() = payload.size == 1 && ((payload[0].toInt() and 0xFF) in 251..255)
+
+    val errorCodeDescription: String?
+        get() = if (isErrorCode) {
+            when (payload[0].toInt() and 0xFF) {
+                251 -> "Comando no soportado por firmware (0xFB)"
+                252 -> "Key/Subcomando no soportado (0xFC)"
+                253 -> "Longitud inválida (0xFD)"
+                254 -> "Datos erróneos (0xFE)"
+                255 -> "Error de suma CRC-16 (0xFF)"
+                else -> "Error YCBT desconocido (${payload[0].toInt() and 0xFF})"
+            }
+        } else null
+
     override fun equals(other: Any?): Boolean {
         if (this === other) return true
         if (javaClass != other?.javaClass) return false
@@ -90,7 +118,7 @@ data class YcbtFrame(
 }
 
 /**
- * Cálculo oficial de CRC-16/CCITT-FALSE
+ * Cálculo oficial de CRC-16/CCITT-FALSE (idéntico a ByteUtil.crc16_compute en SDK Yucheng)
  * Polinomio: 0x1021, Valor inicial: 0xFFFF, Sin reflejo de entrada/salida.
  */
 object YcbtCrc16 {
@@ -137,7 +165,7 @@ object YcbtFrameBuilder {
 }
 
 /**
- * Ensamblador de fragmentos BLE de entrada con control de desbordamiento y resincronización.
+ * Ensamblador de fragmentos BLE de entrada con control de desbordamiento y trazabilidad forense.
  */
 class YcbtFrameAssembler {
     private val buffer = mutableListOf<Byte>()
@@ -179,7 +207,18 @@ class YcbtFrameAssembler {
                 if (payloadSize > 0) {
                     System.arraycopy(frameBytes, 4, payload, 0, payloadSize)
                 }
-                completedFrames.add(YcbtFrame(frameBytes[0], frameBytes[1], payload))
+                val frame = YcbtFrame(frameBytes[0], frameBytes[1], payload)
+                completedFrames.add(frame)
+                
+                val hexStr = frameBytes.joinToString("") { "%02X".format(it) }
+                if (frame.isErrorCode) {
+                    Log.w("YCBT_RAW", "◄◄ RECHAZO_ANILLO [${frame.errorCodeDescription}]: $hexStr")
+                } else {
+                    Log.d("YCBT_RAW", "◄◄ TRAMA_VALIDA [type=0x%02X, cmd=0x%02X, len=$totalLength]: $hexStr".format(frame.type, frame.cmd))
+                }
+            } else {
+                val hexStr = frameBytes.joinToString("") { "%02X".format(it) }
+                Log.e("YCBT_RAW", "◄◄ ERROR_CRC [exp=0x%04X, calc=0x%04X]: $hexStr".format(expectedCrc, computedCrc))
             }
 
             // Desencolar la trama procesada

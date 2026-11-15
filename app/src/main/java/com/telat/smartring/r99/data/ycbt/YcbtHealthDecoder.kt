@@ -1,5 +1,6 @@
 package com.telat.smartring.r99.data.ycbt
 
+import android.util.Log
 import java.time.Instant
 
 sealed class YcbtDecodedEvent {
@@ -200,15 +201,49 @@ object YcbtHealthDecoder {
     /**
      * Decodifica la respuesta de consulta puntual de temperatura dérmica
      * (YCBTClient.getRealTemp / Group 0x02, Cmd 0x0E / DataUnpack.unpackGetRealTemp).
+     * Soporta tanto payload directo [tempInt:1B, tempFloat:1B] como con byte de status inicial.
      */
     fun decodeGetRealTemp(payload: ByteArray): Float? {
         if (payload.size >= 2) {
             val tempInt = payload[0].toInt() and 0xFF
             val tempDec = payload[1].toInt() and 0xFF
-            val celsius = tempInt + (tempDec / 100f)
+            val celsius = "$tempInt.$tempDec".toFloatOrNull() ?: (tempInt + (tempDec / 100f))
             if (celsius in 30.0f..45.0f) {
                 return celsius
             }
+            // Si el primer byte era un código de estado (ej: 0x00=OK) y la temperatura viene en bytes [1..2]
+            if (payload.size >= 3) {
+                val altTempInt = payload[1].toInt() and 0xFF
+                val altTempDec = payload[2].toInt() and 0xFF
+                val altCelsius = "$altTempInt.$altTempDec".toFloatOrNull() ?: (altTempInt + (altTempDec / 100f))
+                if (altCelsius in 30.0f..45.0f) {
+                    return altCelsius
+                }
+            }
+        }
+        return null
+    }
+
+    /**
+     * Decodifica notificación del dispositivo sobre resultados de medición puntual
+     * (SmartHealth DataUnpack.unpackParseData para dataType 1038 [0x04 0x0E] y dataType 1043 [0x04 0x13]).
+     */
+    fun decodeDevMeasurementResult(cmd: Byte, payload: ByteArray): Float? {
+        val cmdInt = cmd.toInt() and 0xFF
+        if (cmdInt == 0x13 && payload.size >= 4) {
+            // dataType 1043: [type:1B][state:1B][tempInt:1B][tempFloat:1B] cuando type == 4 (Temp)
+            val type = payload[0].toInt() and 0xFF
+            if (type == 4) {
+                val tempInt = payload[2].toInt() and 0xFF
+                val tempFloat = payload[3].toInt() and 0xFF
+                val temp = "$tempInt.$tempFloat".toFloatOrNull() ?: (tempInt + (tempFloat / 100f))
+                if (temp in 30.0f..45.0f) return temp
+            }
+        } else if (cmdInt == 0x0E && payload.size >= 2) {
+            // dataType 1038: [measureType:1B][result:1B] (measureType 4 = Temp, result 1 = Success)
+            val measureType = payload[0].toInt() and 0xFF
+            val result = payload[1].toInt() and 0xFF
+            Log.d("YCBT_RAW", "DeviceMeasurementResult (04 0E): measureType=$measureType, result=$result")
         }
         return null
     }
@@ -416,6 +451,11 @@ object YcbtHealthDecoder {
             val steps = YcbtUtils.readU16LE(buffer, offset + 4)
             val hr = buffer[offset + 6].toInt() and 0xFF
             val spo2 = buffer[offset + 9].toInt() and 0xFF
+            val tempInt = buffer[offset + 13].toInt() and 0xFF
+            val tempFloat = buffer[offset + 14].toInt() and 0xFF
+            val tempCelsius = if (tempInt in 30..45) {
+                "$tempInt.$tempFloat".toFloatOrNull() ?: (tempInt + (tempFloat / 100f))
+            } else null
 
             if (tsSec > 0) {
                 records.add(
@@ -423,7 +463,8 @@ object YcbtHealthDecoder {
                         timestamp = YcbtUtils.toInstant(tsSec),
                         steps = steps,
                         heartRate = if (hr in 35..230) hr else null,
-                        spo2 = if (spo2 in 70..100) spo2 else null
+                        spo2 = if (spo2 in 70..100) spo2 else null,
+                        tempCelsius = tempCelsius
                     )
                 )
             }
@@ -437,6 +478,7 @@ data class YcbtCombinedVitalsRecord(
     val timestamp: Instant,
     val steps: Int,
     val heartRate: Int?,
-    val spo2: Int?
+    val spo2: Int?,
+    val tempCelsius: Float? = null
 )
 

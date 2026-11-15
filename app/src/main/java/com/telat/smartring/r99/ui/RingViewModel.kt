@@ -584,11 +584,11 @@ class RingViewModel(application: Application) : AndroidViewModel(application) {
                     statusMessage = "Iniciando sensor térmico y leyendo temperatura dérmica..."
                 )
             }
-            // Disparar comando real según protocolo SmartHealth (0x03 0x18 + polling 0x02 0x0E)
+            // Disparar comando de medición puntual de temperatura en anillo (0x03 0x2F mode=4)
             bleManager.startTemperatureMeasurement()
 
             var receivedRealSample = false
-            for (i in 1..20) {
+            for (i in 1..25) {
                 delay(1000)
                 if (_uiState.value.currentTemperatureCelsius != initialTemp && (_uiState.value.currentTemperatureCelsius ?: 0f) > 0f) {
                     receivedRealSample = true

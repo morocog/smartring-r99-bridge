@@ -31,6 +31,8 @@ import com.telat.smartring.r99.data.ycbt.YcbtFrame
 import com.telat.smartring.r99.data.ycbt.YcbtFrameAssembler
 import com.telat.smartring.r99.data.ycbt.YcbtHealthDecoder
 import com.telat.smartring.r99.data.ycbt.YcbtHistorySyncResult
+import com.telat.smartring.r99.data.ycbt.YcbtTemperatureRecord
+import com.telat.smartring.r99.data.ycbt.YcbtSpo2Record
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -93,6 +95,11 @@ class RingBleManager(
     private var activeQueryCmd: Byte? = null
     private val currentQueryBuffer = mutableListOf<Byte>()
     private var activeQueryDeferred: CompletableDeferred<ByteArray>? = null
+
+    // Cola GATT secuencial gobernada por callbacks reales para evitar colisiones "prior command is not finished"
+    private val gattOperationMutex = Mutex()
+    private var pendingDescriptorWrite: CompletableDeferred<Boolean>? = null
+    private var pendingCharacteristicWrite: CompletableDeferred<Boolean>? = null
 
     // Estados reactivos
     private val _connectionState = MutableStateFlow(BleConnectionState.DISCONNECTED)
@@ -252,20 +259,110 @@ class RingBleManager(
     fun sendSyncPing(): Boolean {
         // Enviar por YCBT si está activo
         if (ycbtCommandCharacteristic != null) {
-            sendYcbtCommand(YcbtCommands.enableLiveStatusPush())
+            coroutineScope.launch {
+                sendYcbtCommandSequential(YcbtCommands.enableLiveStatusPush())
+            }
             return true
         }
 
         // Fallback a NUS
         val char = nusRxCharacteristic ?: return false
         val gatt = bluetoothGatt ?: return false
-        return writeCharacteristic(gatt, char, PING_KEEPALIVE_PAYLOAD)
+        coroutineScope.launch {
+            writeCharacteristicSequential(gatt, char, PING_KEEPALIVE_PAYLOAD)
+        }
+        return true
     }
 
     fun sendYcbtCommand(frame: ByteArray): Boolean {
         val char = ycbtCommandCharacteristic ?: return false
         val gatt = bluetoothGatt ?: return false
-        return writeCharacteristic(gatt, char, frame)
+        coroutineScope.launch {
+            sendYcbtCommandSequential(frame)
+        }
+        return true
+    }
+
+    suspend fun sendYcbtCommandSequential(frame: ByteArray): Boolean {
+        val char = ycbtCommandCharacteristic ?: return false
+        val gatt = bluetoothGatt ?: return false
+        val hexStr = frame.joinToString("") { "%02X".format(it) }
+        Log.d("YCBT_RAW", "►► ENVIANDO_COMANDO [len=${frame.size}]: $hexStr")
+        return writeCharacteristicSequential(gatt, char, frame)
+    }
+
+    private suspend fun writeCharacteristicSequential(
+        gatt: BluetoothGatt,
+        characteristic: BluetoothGattCharacteristic,
+        data: ByteArray
+    ): Boolean = gattOperationMutex.withLock {
+        val deferred = CompletableDeferred<Boolean>()
+        pendingCharacteristicWrite = deferred
+        try {
+            val initiateSuccess = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                gatt.writeCharacteristic(characteristic, data, BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT) == BluetoothStatusCodes.SUCCESS
+            } else {
+                @Suppress("DEPRECATION")
+                characteristic.value = data
+                @Suppress("DEPRECATION")
+                gatt.writeCharacteristic(characteristic)
+            }
+
+            if (!initiateSuccess) {
+                Log.w(TAG, "GATT writeCharacteristic() devolvió false de inmediato para ${characteristic.uuid}")
+                pendingCharacteristicWrite = null
+                return@withLock false
+            }
+
+            withTimeoutOrNull(2_500L) {
+                deferred.await()
+            } ?: run {
+                Log.w(TAG, "Timeout esperando onCharacteristicWrite para ${characteristic.uuid}")
+                false
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Excepción en writeCharacteristicSequential: ${e.message}")
+            false
+        } finally {
+            pendingCharacteristicWrite = null
+        }
+    }
+
+    private suspend fun writeDescriptorSequential(
+        gatt: BluetoothGatt,
+        descriptor: BluetoothGattDescriptor,
+        value: ByteArray
+    ): Boolean = gattOperationMutex.withLock {
+        val deferred = CompletableDeferred<Boolean>()
+        pendingDescriptorWrite = deferred
+        try {
+            val initiateSuccess = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                gatt.writeDescriptor(descriptor, value) == BluetoothStatusCodes.SUCCESS
+            } else {
+                @Suppress("DEPRECATION")
+                descriptor.value = value
+                @Suppress("DEPRECATION")
+                gatt.writeDescriptor(descriptor)
+            }
+
+            if (!initiateSuccess) {
+                Log.w(TAG, "GATT writeDescriptor() devolvió false para ${descriptor.uuid}")
+                pendingDescriptorWrite = null
+                return@withLock false
+            }
+
+            withTimeoutOrNull(2_500L) {
+                deferred.await()
+            } ?: run {
+                Log.w(TAG, "Timeout esperando onDescriptorWrite para ${descriptor.uuid}")
+                false
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Excepción en writeDescriptorSequential: ${e.message}")
+            false
+        } finally {
+            pendingDescriptorWrite = null
+        }
     }
 
     /**
@@ -324,8 +421,14 @@ class RingBleManager(
             }
         }
 
+        // Unificar mediciones de temperatura de historial dedicado (05 1E) y combinado (05 09)
+        val combinedTemp = combinedRecords.mapNotNull { rec ->
+            rec.tempCelsius?.let { YcbtTemperatureRecord(rec.timestamp, it) }
+        }
+        val allTemp = (tempRecords + combinedTemp).distinctBy { it.timestamp }
+
         // Si hay registros históricos de temperatura, emitir la más reciente a la UI
-        tempRecords.maxByOrNull { it.timestamp }?.let { latestTemp ->
+        allTemp.maxByOrNull { it.timestamp }?.let { latestTemp ->
             coroutineScope.launch {
                 _temperatureFlow.emit(latestTemp.celsius)
             }
@@ -338,27 +441,18 @@ class RingBleManager(
             sleepSessions = sleepSessions,
             heartRateRecords = hrRecords,
             spo2Records = allSpo2,
-            temperatureRecords = tempRecords
+            temperatureRecords = allTemp
         )
     }
 
-    private var tempPollingJob: Job? = null
-
     /**
-     * Inicia protocolo de medición continua de temperatura corporal según ingeniería inversa SmartHealth:
-     * Dispara YCBTClient.appTemperatureMeasure(1) (0x03 0x18 0x01) y encuesta YCBTClient.getRealTemp() (0x02 0x0E) cada segundo.
+     * Inicia protocolo de medición puntual de temperatura corporal en el anillo:
+     * Dispara YCBTClient.triggerMeasurement(enable=true, mode=0x04) (0x03 0x2F 0x01 0x04).
+     * El anillo activa su termistor y devuelve el resultado vía DevControl (0x04 0x13 / 0x04 0x0E).
      */
     fun startTemperatureMeasurement() {
-        Log.i(TAG, "Iniciando medición activa de temperatura corporal (0x03 0x18 + polling 0x02 0x0E)...")
-        sendYcbtCommand(YcbtCommands.setTemperatureMeasure(true))
-        tempPollingJob?.cancel()
-        tempPollingJob = coroutineScope.launch(Dispatchers.IO) {
-            delay(500)
-            while (isActive) {
-                sendYcbtCommand(YcbtCommands.queryRealTemp())
-                delay(1000)
-            }
-        }
+        Log.i(TAG, "Iniciando medición puntual de temperatura corporal (0x03 0x2F mode=4)...")
+        sendYcbtCommand(YcbtCommands.triggerMeasurement(enable = true, mode = YcbtConstants.MEASURE_MODE_TEMP))
     }
 
     /**
@@ -366,9 +460,7 @@ class RingBleManager(
      */
     fun stopTemperatureMeasurement() {
         Log.i(TAG, "Deteniendo medición de temperatura corporal...")
-        tempPollingJob?.cancel()
-        tempPollingJob = null
-        sendYcbtCommand(YcbtCommands.setTemperatureMeasure(false))
+        sendYcbtCommand(YcbtCommands.triggerMeasurement(enable = false, mode = YcbtConstants.MEASURE_MODE_TEMP))
     }
 
     fun startSpotMeasurement(mode: Byte) {
@@ -392,7 +484,7 @@ class RingBleManager(
         }
 
         val requestBytes = YcbtCommands.queryHistory(queryCmd)
-        sendYcbtCommand(requestBytes)
+        sendYcbtCommandSequential(requestBytes)
 
         val result = withTimeoutOrNull(6_000L) {
             deferred.await()
@@ -459,6 +551,22 @@ class RingBleManager(
             }
         }
 
+        override fun onDescriptorWrite(gatt: BluetoothGatt?, descriptor: BluetoothGattDescriptor?, status: Int) {
+            Log.d(TAG, "onDescriptorWrite callback: ${descriptor?.uuid}, status=$status")
+            pendingDescriptorWrite?.complete(status == BluetoothGatt.GATT_SUCCESS)
+            pendingDescriptorWrite = null
+        }
+
+        override fun onCharacteristicWrite(gatt: BluetoothGatt?, characteristic: BluetoothGattCharacteristic?, status: Int) {
+            Log.d(TAG, "onCharacteristicWrite callback: ${characteristic?.uuid}, status=$status")
+            pendingCharacteristicWrite?.complete(status == BluetoothGatt.GATT_SUCCESS)
+            pendingCharacteristicWrite = null
+        }
+
+        override fun onMtuChanged(gatt: BluetoothGatt?, mtu: Int, status: Int) {
+            Log.i(TAG, "onMtuChanged: MTU negociado a $mtu (status=$status)")
+        }
+
         override fun onServicesDiscovered(gatt: BluetoothGatt?, status: Int) {
             if (status != BluetoothGatt.GATT_SUCCESS || gatt == null) {
                 Log.e(TAG, "Error descubriendo servicios GATT: $status")
@@ -467,6 +575,14 @@ class RingBleManager(
             }
 
             Log.i(TAG, "Servicios GATT descubiertos con éxito")
+
+            // Solicitar MTU amplio y prioridad de conexión balanceada (idéntico a SmartHealth BleHelper)
+            try {
+                gatt.requestMtu(517)
+                gatt.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_BALANCED)
+            } catch (e: Exception) {
+                Log.w(TAG, "Error al configurar MTU/ConnectionPriority: ${e.message}")
+            }
 
             // 1. Servicio YCBT propietario (SmartHealth / Yucheng)
             val ycbtService = gatt.getService(YcbtConstants.SERVICE_UUID)
@@ -484,49 +600,52 @@ class RingBleManager(
             _connectionState.value = BleConnectionState.CONNECTED
 
             coroutineScope.launch(Dispatchers.IO) {
-                // Suscribir características YCBT prioritariamente
+                // Suscribir características YCBT prioritariamente esperando confirmación GATT real
                 ycbtStreamCharacteristic?.let { streamChar ->
-                    enableNotificationOrIndication(gatt, streamChar)
-                    delay(350L)
+                    enableNotificationOrIndicationSequential(gatt, streamChar)
                 }
 
                 ycbtCommandCharacteristic?.let { cmdChar ->
-                    enableNotificationOrIndication(gatt, cmdChar)
-                    delay(350L)
+                    enableNotificationOrIndicationSequential(gatt, cmdChar)
                 }
 
                 // Suscribir fallbacks
                 heartRateCharacteristic?.let { hrChar ->
-                    enableNotificationOrIndication(gatt, hrChar)
-                    delay(300L)
+                    enableNotificationOrIndicationSequential(gatt, hrChar)
                 }
 
                 nusTxCharacteristic?.let { nusChar ->
-                    enableNotificationOrIndication(gatt, nusChar)
-                    delay(300L)
+                    enableNotificationOrIndicationSequential(gatt, nusChar)
                 }
 
-                // Secuencia oficial de inicialización YCBT
+                // Secuencia oficial de inicialización YCBT de forma estrictamente secuencial
                 if (ycbtCommandCharacteristic != null) {
-                    Log.i(TAG, "Ejecutando protocolo de inicialización YCBT (Hora, Monitores 30m, Live Push)...")
+                    Log.i(TAG, "Ejecutando protocolo de inicialización YCBT secuencial (Hora, Monitores 30m, Live Push, Hardware Caps)...")
 
                     // 1. Sincronización horaria
-                    sendYcbtCommand(YcbtCommands.setTime())
-                    delay(250L)
+                    sendYcbtCommandSequential(YcbtCommands.setTime())
 
-                    // 2. Activar monitores en cadencia fija obligatoria de 30 minutos
+                    // 2. Consultar funciones de hardware y sensores soportados por el firmware
+                    sendYcbtCommandSequential(YcbtCommands.getDeviceSupportFunction())
+
+                    // 3. Activar monitores en cadencia fija obligatoria de 30 minutos
                     val monitorCmds = YcbtCommands.enable30MinMonitors(intervalMinutes = 30)
                     for (cmd in monitorCmds) {
-                        sendYcbtCommand(cmd)
-                        delay(200L)
+                        sendYcbtCommandSequential(cmd)
                     }
 
-                    // 3. Activar telemetría continua
-                    sendYcbtCommand(YcbtCommands.enableLiveStatusPush())
-                    delay(200L)
+                    // 4. Activar telemetría continua
+                    sendYcbtCommandSequential(YcbtCommands.enableLiveStatusPush())
 
-                    // 4. Solicitar info del dispositivo (batería)
-                    sendYcbtCommand(YcbtCommands.getDeviceInfo())
+                    // 5. Solicitar info del dispositivo (batería)
+                    sendYcbtCommandSequential(YcbtCommands.getDeviceInfo())
+
+                    // 6. Sincronización inicial automática de historial (sueño, temperatura, vitals)
+                    coroutineScope.launch {
+                        delay(1500)
+                        Log.i(TAG, "Iniciando descarga inicial de historial YCBT (sueño, temperatura y vitals)...")
+                        syncAllHistory()
+                    }
                 } else {
                     // Fallback a ping NUS
                     sendSyncPing()
@@ -536,7 +655,7 @@ class RingBleManager(
             }
         }
 
-        private fun enableNotificationOrIndication(gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic) {
+        private suspend fun enableNotificationOrIndicationSequential(gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic) {
             gatt.setCharacteristicNotification(characteristic, true)
             val descriptor = characteristic.getDescriptor(CCCD_DESCRIPTOR_UUID) ?: return
 
@@ -547,15 +666,8 @@ class RingBleManager(
                 BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
             }
 
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                gatt.writeDescriptor(descriptor, descriptorValue)
-            } else {
-                @Suppress("DEPRECATION")
-                descriptor.value = descriptorValue
-                @Suppress("DEPRECATION")
-                gatt.writeDescriptor(descriptor)
-            }
-            Log.d(TAG, "Notificaciones/Indicaciones habilitadas para ${characteristic.uuid}")
+            val success = writeDescriptorSequential(gatt, descriptor, descriptorValue)
+            Log.d(TAG, "Notificaciones/Indicaciones configuradas para ${characteristic.uuid} [success=$success]")
         }
 
         @Deprecated("Deprecated for SDK 33+")
@@ -620,8 +732,11 @@ class RingBleManager(
             when (frame.type) {
                 YcbtConstants.GROUP_HEALTH -> {
                     // Historial de salud (0x05)
+                    val cmdInt = frame.cmd.toInt() and 0xFF
+                    val isQuerySummaryPacket = cmdInt == (activeQueryCmd?.toInt()?.and(0xFF))
+                    
                     if (frame.cmd == YcbtConstants.TERMINAL_BLOCK) {
-                        // Bloque terminal alcanzado: Enviar ACK obligatorio de inmediato
+                        // Bloque terminal alcanzado (05 80): Enviar ACK obligatorio de inmediato
                         Log.d(TAG, "Fin de bloque de historial (05 80). Despachando ACK...")
                         sendYcbtCommand(YcbtCommands.historyBlockAck(YcbtConstants.ACK_SUCCESS))
 
@@ -632,11 +747,112 @@ class RingBleManager(
                             }
                             deferred.complete(accumulated)
                         }
+                    } else if (isQuerySummaryPacket) {
+                        // Paquete resumen de cabecera (10 bytes: numRegistros:2, totalPaquetes:4, totalBytes:4)
+                        val recordCount = if (frame.payload.size >= 2) {
+                            (frame.payload[0].toInt() and 0xFF) or ((frame.payload[1].toInt() and 0xFF) shl 8)
+                        } else 0
+                        Log.i(TAG, "Resumen de consulta historial (05 %02X): records=$recordCount, payloadLen=${frame.payload.size}".format(cmdInt))
+                        
+                        if (frame.payload.size <= 9 || recordCount == 0 || frame.isErrorCode) {
+                            Log.d(TAG, "Sin registros almacenados para 05 %02X, completando consulta vacía".format(cmdInt))
+                            activeQueryDeferred?.complete(ByteArray(0))
+                        }
+                        // NOTA CLAVE: No agregamos este paquete de 10 bytes a currentQueryBuffer para no corromper los registros reales
                     } else {
-                        // Chunk intermedio de datos del historial
+                        // Chunk de datos reales de historial (ej: 0x11, 0x13, 0x15, 0x17, 0x18, 0x22, 0x26)
                         synchronized(currentQueryBuffer) {
                             for (b in frame.payload) {
                                 currentQueryBuffer.add(b)
+                            }
+                        }
+                    }
+                }
+
+                YcbtConstants.GROUP_DEV_CONTROL -> {
+                    // Notificaciones de control del dispositivo (0x04)
+                    val cmdInt = frame.cmd.toInt() and 0xFF
+                    Log.d("YCBT_RAW", "◄◄ DEV_CONTROL (04 %02X) payload=[%s]".format(cmdInt, frame.payload.joinToString("") { "%02X".format(it) }))
+                    
+                    // Responder ACK mandatorio (0x04 <cmd> 0x00)
+                    sendYcbtCommand(YcbtCommands.devControlPushAck(frame.cmd))
+
+                    when (cmdInt) {
+                        0x13 -> {
+                            // dataType 1043: Muestra en tiempo real o resultado intermedio de medición puntual
+                            if (frame.payload.size >= 3) {
+                                val type = frame.payload[0].toInt() and 0xFF
+                                when (type) {
+                                    0 -> { // Pulso
+                                        val hr = frame.payload[2].toInt() and 0xFF
+                                        if (hr in 35..230) {
+                                            coroutineScope.launch { _heartRateFlow.emit(HeartRateSample(bpm = hr)) }
+                                        }
+                                    }
+                                    1 -> { // Presión
+                                        if (frame.payload.size >= 4) {
+                                            val sys = frame.payload[2].toInt() and 0xFF
+                                            val dia = frame.payload[3].toInt() and 0xFF
+                                            if (sys in 50..240 && dia in 30..150) {
+                                                coroutineScope.launch { _bloodPressureFlow.emit(Pair(sys, dia)) }
+                                            }
+                                        }
+                                    }
+                                    2 -> { // SpO2
+                                        val spo2 = frame.payload[2].toInt() and 0xFF
+                                        if (spo2 in 70..100) {
+                                            coroutineScope.launch { _spo2Flow.emit(spo2) }
+                                        }
+                                    }
+                                    4 -> { // Temperatura
+                                        if (frame.payload.size >= 4) {
+                                            val tempInt = frame.payload[2].toInt() and 0xFF
+                                            val tempDec = frame.payload[3].toInt() and 0xFF
+                                            val temp = "$tempInt.$tempDec".toFloatOrNull() ?: (tempInt + (tempDec / 100f))
+                                            if (temp in 30.0f..45.0f) {
+                                                Log.i(TAG, "¡Temperatura recibida vía DevControl 1043: $temp °C!")
+                                                coroutineScope.launch { _temperatureFlow.emit(temp) }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        0x0E -> {
+                            // dataType 1038: Finalización de medición puntual en hardware [measureType, result]
+                            if (frame.payload.size >= 2) {
+                                val measureType = frame.payload[0].toInt() and 0xFF
+                                val result = frame.payload[1].toInt() and 0xFF
+                                Log.i(TAG, "DeviceMeasurementResult (04 0E): measureType=$measureType, result=$result (1=Éxito)")
+                                if (result == 1) {
+                                    // Medición exitosa: el anillo guardó el registro en memoria flash. Sincronizar bloque correspondiente
+                                    coroutineScope.launch {
+                                        when (measureType) {
+                                            4 -> { // Temp
+                                                val tempBytes = queryHistoryBlock(YcbtConstants.QUERY_TEMP)
+                                                val records = YcbtHealthDecoder.decodeTemperature(tempBytes)
+                                                records.maxByOrNull { it.timestamp }?.let {
+                                                    Log.i(TAG, "Temperatura confirmada desde memoria flash: ${it.celsius} °C")
+                                                    _temperatureFlow.emit(it.celsius)
+                                                }
+                                            }
+                                            2 -> { // SpO2
+                                                val spo2Bytes = queryHistoryBlock(YcbtConstants.QUERY_SPO2)
+                                                val records = YcbtHealthDecoder.decodeSpo2(spo2Bytes)
+                                                records.maxByOrNull { it.timestamp }?.let {
+                                                    _spo2Flow.emit(it.percent)
+                                                }
+                                            }
+                                            0 -> { // HR
+                                                val hrBytes = queryHistoryBlock(YcbtConstants.QUERY_HEART_RATE)
+                                                val records = YcbtHealthDecoder.decodeHeartRate(hrBytes)
+                                                records.maxByOrNull { it.timestamp }?.let {
+                                                    _heartRateFlow.emit(HeartRateSample(bpm = it.bpm))
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
@@ -716,6 +932,10 @@ class RingBleManager(
                                 _temperatureFlow.emit(temp)
                             }
                         }
+                    } else if (cmdInt == (YcbtConstants.CMD_GET_DEVICE_SUPPORT_FUNCTION.toInt() and 0xFF)) {
+                        // Mapa de funciones y sensores soportados por el hardware
+                        val hexCaps = frame.payload.joinToString("") { "%02X".format(it) }
+                        Log.i(TAG, "Mapa de funciones de hardware soportadas por R99: $hexCaps")
                     } else if ((cmdInt == 0x00 || cmdInt == 0x03) && frame.payload.isNotEmpty()) {
                         val b0 = frame.payload[0].toInt() and 0xFF
                         val b1 = if (frame.payload.size > 1) frame.payload[1].toInt() and 0xFF else -1
