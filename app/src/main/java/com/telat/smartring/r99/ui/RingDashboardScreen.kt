@@ -583,9 +583,9 @@ private fun InteractiveVitalCard(
                         tint = accentColor
                     )
                     Spacer(modifier = Modifier.width(4.dp))
-                    Text(buttonText, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = TextPrimary)
+                    Text(
                         text = buttonText,
-                        fontSize = 11.sp,
+                        fontSize = 13.sp,
                         fontWeight = FontWeight.SemiBold,
                         color = TextPrimary
                     )
