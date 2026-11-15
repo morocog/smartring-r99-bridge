@@ -35,6 +35,23 @@ object YcbtConstants {
     const val QUERY_SPO2: Byte = 0x1A.toByte()  // Responde con tramas 0x22 (registros de 6 bytes)
     const val QUERY_TEMP: Byte = 0x1E.toByte()  // Responde con tramas 0x26 (registros de 7 bytes)
 
+    // Opcodes específicos de temperatura y control del SDK SmartHealth (Yucheng)
+    const val CMD_GET_REAL_TEMP: Byte = 0x0E        // Group 0x02, Cmd 0x0E (dataType 526)
+    const val CMD_APP_TEMP_MEASURE: Byte = 0x18     // Group 0x03, Cmd 0x18 (dataType 792)
+
+    // Opcodes de telemetría continua (Group 0x06 - Real)
+    const val REAL_UPLOAD_HEART: Byte = 0x01        // Group 0x06, Cmd 0x01 (dataType 1537)
+    const val REAL_UPLOAD_SPO2: Byte = 0x02         // Group 0x06, Cmd 0x02 (dataType 1538)
+    const val REAL_UPLOAD_BLOOD: Byte = 0x03        // Group 0x06, Cmd 0x03 (dataType 1539)
+    const val REAL_UPLOAD_TEMP: Byte = 0x04         // Group 0x06, Cmd 0x04 (dataType 1540)
+    const val REAL_UPLOAD_COMPREHENSIVE: Byte = 0x0A // Group 0x06, Cmd 0x0A (dataType 1546)
+
+    // Constantes de fases de sueño según SmartHealth DataUnpack (case 4)
+    const val SLEEP_TAG_DEEP = 241   // 0xF1
+    const val SLEEP_TAG_LIGHT = 242  // 0xF2
+    const val SLEEP_TAG_REM = 243    // 0xF3
+    const val SLEEP_TAG_AWAKE = 244  // 0xF4
+
     // Modos de medición puntual bajo demanda (AppControl 0x03, Cmd 0x2F)
     const val MEASURE_MODE_HEART_RATE: Byte = 0x00
     const val MEASURE_MODE_BP: Byte = 0x01

@@ -306,6 +306,11 @@ class RingBleManager(
         val combinedRecords = YcbtHealthDecoder.decodeCombinedVitals(combinedBytes)
         Log.i(TAG, "Historial combinado (05 09) descargado: ${combinedRecords.size} registros")
 
+        // 6. Descarga de registros de temperatura dérmica (05 1E)
+        val tempBytes = queryHistoryBlock(YcbtConstants.QUERY_TEMP)
+        val tempRecords = YcbtHealthDecoder.decodeTemperature(tempBytes)
+        Log.i(TAG, "Historial de temperatura descargado: ${tempRecords.size} muestras")
+
         val combinedSpo2 = combinedRecords.mapNotNull { rec ->
             rec.spo2?.let { com.telat.smartring.r99.data.ycbt.YcbtSpo2Record(rec.timestamp, it) }
         }
@@ -319,14 +324,51 @@ class RingBleManager(
             }
         }
 
+        // Si hay registros históricos de temperatura, emitir la más reciente a la UI
+        tempRecords.maxByOrNull { it.timestamp }?.let { latestTemp ->
+            coroutineScope.launch {
+                _temperatureFlow.emit(latestTemp.celsius)
+            }
+        }
+
         _connectionState.value = BleConnectionState.CONNECTED
 
         return YcbtHistorySyncResult(
             sportRecords = sportRecords,
             sleepSessions = sleepSessions,
             heartRateRecords = hrRecords,
-            spo2Records = allSpo2
+            spo2Records = allSpo2,
+            temperatureRecords = tempRecords
         )
+    }
+
+    private var tempPollingJob: Job? = null
+
+    /**
+     * Inicia protocolo de medición continua de temperatura corporal según ingeniería inversa SmartHealth:
+     * Dispara YCBTClient.appTemperatureMeasure(1) (0x03 0x18 0x01) y encuesta YCBTClient.getRealTemp() (0x02 0x0E) cada segundo.
+     */
+    fun startTemperatureMeasurement() {
+        Log.i(TAG, "Iniciando medición activa de temperatura corporal (0x03 0x18 + polling 0x02 0x0E)...")
+        sendYcbtCommand(YcbtCommands.setTemperatureMeasure(true))
+        tempPollingJob?.cancel()
+        tempPollingJob = coroutineScope.launch(Dispatchers.IO) {
+            delay(500)
+            while (isActive) {
+                sendYcbtCommand(YcbtCommands.queryRealTemp())
+                delay(1000)
+            }
+        }
+    }
+
+    /**
+     * Detiene protocolo de medición de temperatura corporal.
+     */
+    fun stopTemperatureMeasurement() {
+        Log.i(TAG, "Deteniendo medición de temperatura corporal...")
+        tempPollingJob?.cancel()
+        tempPollingJob = null
+        sendYcbtCommand(YcbtCommands.setTemperatureMeasure(false))
     }
 
     fun startSpotMeasurement(mode: Byte) {
@@ -627,6 +669,31 @@ class RingBleManager(
                                 is YcbtDecodedEvent.RealtimeTemperature -> {
                                     _temperatureFlow.emit(event.celsius)
                                 }
+                                is YcbtDecodedEvent.RealtimeComprehensive -> {
+                                    _consolidatedStepsFlow.emit(
+                                        StepsSample(
+                                            steps = event.steps.toInt(),
+                                            calories = event.calories.toInt(),
+                                            distanceMeters = event.distanceMeters.toInt()
+                                        )
+                                    )
+                                    if (event.bpm in 35..230) {
+                                        _heartRateFlow.emit(HeartRateSample(bpm = event.bpm))
+                                    }
+                                    if (event.spo2 in 70..100) {
+                                        _spo2Flow.emit(event.spo2)
+                                    }
+                                    if (event.systolic in 50..240 && event.diastolic in 30..150) {
+                                        _bloodPressureFlow.emit(Pair(event.systolic, event.diastolic))
+                                    }
+                                    if (event.tempCelsius != null && event.tempCelsius in 30.0f..45.0f) {
+                                        _temperatureFlow.emit(event.tempCelsius)
+                                    }
+                                    _sensorContactFlow.emit(event.isWorn)
+                                    if (event.batteryPercent != null) {
+                                        _batteryFlow.emit(Pair(event.batteryPercent, false))
+                                    }
+                                }
                                 is YcbtDecodedEvent.SensorContactStatus -> {
                                     _sensorContactFlow.emit(event.hasContact)
                                 }
@@ -640,9 +707,16 @@ class RingBleManager(
                 }
 
                 YcbtConstants.GROUP_GET -> {
-                    // Info de batería y versión de firmware (Cmd 0x00 o 0x03)
                     val cmdInt = frame.cmd.toInt() and 0xFF
-                    if ((cmdInt == 0x00 || cmdInt == 0x03) && frame.payload.isNotEmpty()) {
+                    if (cmdInt == (YcbtConstants.CMD_GET_REAL_TEMP.toInt() and 0xFF)) {
+                        // Respuesta a consulta puntual de temperatura dérmica (0x02 0x0E)
+                        val temp = YcbtHealthDecoder.decodeGetRealTemp(frame.payload)
+                        if (temp != null) {
+                            coroutineScope.launch {
+                                _temperatureFlow.emit(temp)
+                            }
+                        }
+                    } else if ((cmdInt == 0x00 || cmdInt == 0x03) && frame.payload.isNotEmpty()) {
                         val b0 = frame.payload[0].toInt() and 0xFF
                         val b1 = if (frame.payload.size > 1) frame.payload[1].toInt() and 0xFF else -1
                         val battery = when {

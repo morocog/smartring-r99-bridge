@@ -227,11 +227,17 @@ fun RingDashboardScreen(
             )
         }
 
-        // 5. Tarjeta de Estado de Actividad y Sueño
+        // 5. Tarjeta de Estado de Actividad y Desglose Científico de Sueño
         ActivityAndSleepCard(
             isMoving = uiState.isMoving,
             sleepText = uiState.sleepStatusText,
-            syncedSleepSessions = uiState.syncedSleepSessionsCount
+            syncedSleepSessions = uiState.syncedSleepSessionsCount,
+            totalMinutes = uiState.lastSleepTotalMinutes,
+            deepMinutes = uiState.lastSleepDeepMinutes,
+            lightMinutes = uiState.lastSleepLightMinutes,
+            remMinutes = uiState.lastSleepRemMinutes,
+            awakeMinutes = uiState.lastSleepAwakeMinutes,
+            sleepDateStr = uiState.lastSleepDateStr
         )
 
         // 6. Controles y Sincronización Explicativa (sin botones comprimidos)
@@ -726,7 +732,13 @@ private fun CaloriesMetricCard(
 private fun ActivityAndSleepCard(
     isMoving: Boolean,
     sleepText: String,
-    syncedSleepSessions: Int
+    syncedSleepSessions: Int,
+    totalMinutes: Int,
+    deepMinutes: Int,
+    lightMinutes: Int,
+    remMinutes: Int,
+    awakeMinutes: Int,
+    sleepDateStr: String
 ) {
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -737,7 +749,7 @@ private fun ActivityAndSleepCard(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
+            verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -765,8 +777,29 @@ private fun ActivityAndSleepCard(
                     Text(
                         text = sleepText,
                         fontSize = 13.sp,
-                        color = TextSecondary
+                        fontWeight = FontWeight.Medium,
+                        color = TextPrimary
                     )
+                }
+            }
+
+            if (totalMinutes > 0) {
+                if (sleepDateStr.isNotEmpty()) {
+                    Text(
+                        text = "Sesión registrada: $sleepDateStr",
+                        fontSize = 11.sp,
+                        color = TextMuted
+                    )
+                }
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    SleepStageChip(label = "Profundo", minutes = deepMinutes, color = Color(0xFF7986CB), modifier = Modifier.weight(1f))
+                    SleepStageChip(label = "Ligero", minutes = lightMinutes, color = Color(0xFF64B5F6), modifier = Modifier.weight(1f))
+                    SleepStageChip(label = "REM", minutes = remMinutes, color = Color(0xFFBA68C8), modifier = Modifier.weight(1f))
+                    SleepStageChip(label = "Vigilia", minutes = awakeMinutes, color = Color(0xFFFFB74D), modifier = Modifier.weight(1f))
                 }
             }
 
@@ -777,6 +810,39 @@ private fun ActivityAndSleepCard(
                     color = TelatYellow
                 )
             }
+        }
+    }
+}
+
+@Composable
+private fun SleepStageChip(
+    label: String,
+    minutes: Int,
+    color: Color,
+    modifier: Modifier = Modifier
+) {
+    Box(
+        modifier = modifier
+            .clip(RoundedCornerShape(8.dp))
+            .background(color.copy(alpha = 0.15f))
+            .padding(horizontal = 4.dp, vertical = 6.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Text(
+                text = label,
+                fontSize = 10.sp,
+                color = color,
+                fontWeight = FontWeight.Medium
+            )
+            Text(
+                text = "${minutes}m",
+                fontSize = 13.sp,
+                color = TextPrimary,
+                fontWeight = FontWeight.Bold
+            )
         }
     }
 }

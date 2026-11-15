@@ -7,11 +7,24 @@ sealed class YcbtDecodedEvent {
     data class HeartRateHistory(val records: List<YcbtHeartRateRecord>) : YcbtDecodedEvent()
     data class Spo2History(val records: List<YcbtSpo2Record>) : YcbtDecodedEvent()
     data class SleepHistory(val sessions: List<YcbtSleepSession>) : YcbtDecodedEvent()
+    data class TemperatureHistory(val records: List<YcbtTemperatureRecord>) : YcbtDecodedEvent()
     data class RealtimeStatus(val steps: Long, val calories: Long, val distanceMeters: Long) : YcbtDecodedEvent()
     data class RealtimeHeartRate(val bpm: Int) : YcbtDecodedEvent()
     data class RealtimeSpo2(val percent: Int) : YcbtDecodedEvent()
     data class RealtimeBloodPressure(val systolic: Int, val diastolic: Int) : YcbtDecodedEvent()
     data class RealtimeTemperature(val celsius: Float) : YcbtDecodedEvent()
+    data class RealtimeComprehensive(
+        val steps: Long,
+        val calories: Long,
+        val distanceMeters: Long,
+        val bpm: Int,
+        val systolic: Int,
+        val diastolic: Int,
+        val spo2: Int,
+        val tempCelsius: Float?,
+        val isWorn: Boolean,
+        val batteryPercent: Int?
+    ) : YcbtDecodedEvent()
     data class SensorContactStatus(val hasContact: Boolean) : YcbtDecodedEvent()
     data class BatteryStatus(val percent: Int, val isCharging: Boolean) : YcbtDecodedEvent()
 }
@@ -24,14 +37,20 @@ data class YcbtSportRecord(
     val caloriesKcal: Int
 )
 
+data class YcbtTemperatureRecord(
+    val timestamp: Instant,
+    val celsius: Float
+)
+
 data class YcbtHistorySyncResult(
     val sportRecords: List<YcbtSportRecord> = emptyList(),
     val sleepSessions: List<YcbtSleepSession> = emptyList(),
     val heartRateRecords: List<YcbtHeartRateRecord> = emptyList(),
-    val spo2Records: List<YcbtSpo2Record> = emptyList()
+    val spo2Records: List<YcbtSpo2Record> = emptyList(),
+    val temperatureRecords: List<YcbtTemperatureRecord> = emptyList()
 ) {
     val totalCount: Int
-        get() = sportRecords.size + sleepSessions.size + heartRateRecords.size + spo2Records.size
+        get() = sportRecords.size + sleepSessions.size + heartRateRecords.size + spo2Records.size + temperatureRecords.size
 }
 
 data class YcbtHeartRateRecord(
@@ -150,10 +169,55 @@ object YcbtHealthDecoder {
     }
 
     /**
+     * Decodifica registros de temperatura dérmica almacenados (query 0x1E, registros de 7 bytes)
+     * Layout SmartHealth (case 30): [ts:u32 LE][type:1B][tempInt:1B][tempDec:1B]
+     */
+    fun decodeTemperature(buffer: ByteArray): List<YcbtTemperatureRecord> {
+        val records = mutableListOf<YcbtTemperatureRecord>()
+        val stride = 7
+        var offset = 0
+
+        while (offset + stride <= buffer.size) {
+            val tsSec = YcbtUtils.readU32LE(buffer, offset)
+            val tempInt = buffer[offset + 5].toInt() and 0xFF
+            val tempDec = buffer[offset + 6].toInt() and 0xFF
+            val celsius = tempInt + (tempDec / 100f)
+
+            if (tsSec > 0 && celsius in 30.0f..45.0f) {
+                records.add(
+                    YcbtTemperatureRecord(
+                        timestamp = YcbtUtils.toInstant(tsSec),
+                        celsius = celsius
+                    )
+                )
+            }
+            offset += stride
+        }
+
+        return records
+    }
+
+    /**
+     * Decodifica la respuesta de consulta puntual de temperatura dérmica
+     * (YCBTClient.getRealTemp / Group 0x02, Cmd 0x0E / DataUnpack.unpackGetRealTemp).
+     */
+    fun decodeGetRealTemp(payload: ByteArray): Float? {
+        if (payload.size >= 2) {
+            val tempInt = payload[0].toInt() and 0xFF
+            val tempDec = payload[1].toInt() and 0xFF
+            val celsius = tempInt + (tempDec / 100f)
+            if (celsius in 30.0f..45.0f) {
+                return celsius
+            }
+        }
+        return null
+    }
+
+    /**
      * Decodifica sesiones completas de sueño (query 0x04, longitud variable)
-     * Cabecera: 20 bytes [flags:2][recordLen:u16 LE@2][start:u32 LE@4][end:u32 LE@8]
-     * Segmentos: 8 bytes [tag:1B][segStart:u32 LE@1][duration:u24 LE@5]
-     * tag & 0x0F: 1=Deep, 2=Light, 3=REM, 4=Awake
+     * Cabecera SmartHealth (case 4): 20 bytes [flags:2][recordLen:u16 LE@2][start:u32 LE@4][end:u32 LE@8]
+     * Segmentos: 8 bytes [sleepType:1B][segStart:u32 LE@1][duration:u24 LE@5]
+     * sleepType: 241/1=Deep, 242/2=Light, 243/3=REM, 244/4=Awake
      */
     fun decodeSleep(buffer: ByteArray): List<YcbtSleepSession> {
         val sessions = mutableListOf<YcbtSleepSession>()
@@ -166,7 +230,7 @@ object YcbtHealthDecoder {
             if (recordLength < headerLength) break
 
             val sessionStartSec = YcbtUtils.readU32LE(buffer, cursor + 4)
-            val sessionEndSec = YcbtUtils.readU32LE(buffer, cursor + 8)
+            var sessionEndSec = YcbtUtils.readU32LE(buffer, cursor + 8)
 
             val segmentsStart = cursor + headerLength
             val declaredSegments = (recordLength - headerLength) / segmentLength
@@ -176,15 +240,21 @@ object YcbtHealthDecoder {
             val stages = mutableListOf<YcbtSleepStage>()
             for (i in 0 until count) {
                 val segOffset = segmentsStart + i * segmentLength
-                val tag = buffer[segOffset].toInt() and 0x0F
+                val rawTag = buffer[segOffset].toInt() and 0xFF
                 val segStartSec = YcbtUtils.readU32LE(buffer, segOffset + 1)
                 val durationSec = YcbtUtils.readU24LE(buffer, segOffset + 5).toLong()
 
-                val stageType = when (tag) {
-                    1 -> YcbtSleepStageType.DEEP
-                    2 -> YcbtSleepStageType.LIGHT
-                    3 -> YcbtSleepStageType.REM
-                    else -> YcbtSleepStageType.AWAKE
+                val stageType = when (rawTag) {
+                    YcbtConstants.SLEEP_TAG_DEEP, 1 -> YcbtSleepStageType.DEEP
+                    YcbtConstants.SLEEP_TAG_LIGHT, 2 -> YcbtSleepStageType.LIGHT
+                    YcbtConstants.SLEEP_TAG_REM, 3 -> YcbtSleepStageType.REM
+                    YcbtConstants.SLEEP_TAG_AWAKE, 4 -> YcbtSleepStageType.AWAKE
+                    else -> when (rawTag and 0x0F) {
+                        1 -> YcbtSleepStageType.DEEP
+                        2 -> YcbtSleepStageType.LIGHT
+                        3 -> YcbtSleepStageType.REM
+                        else -> YcbtSleepStageType.AWAKE
+                    }
                 }
 
                 if (durationSec > 0) {
@@ -198,11 +268,20 @@ object YcbtHealthDecoder {
                 }
             }
 
-            if (sessionEndSec > sessionStartSec) {
+            // Si sessionEndSec es inconsistente, inferir fin a partir de la última fase de sueño
+            val calculatedEndSec = if (stages.isNotEmpty()) {
+                val lastStage = stages.maxByOrNull { it.startTime }!!
+                val lastStageSec = lastStage.startTime.epochSecond - YcbtConstants.YCBT_EPOCH_OFFSET_SECONDS + lastStage.durationSeconds
+                maxOf(sessionEndSec, lastStageSec)
+            } else {
+                sessionEndSec
+            }
+
+            if (calculatedEndSec > sessionStartSec && stages.isNotEmpty()) {
                 sessions.add(
                     YcbtSleepSession(
                         startTime = YcbtUtils.toInstant(sessionStartSec),
-                        endTime = YcbtUtils.toInstant(sessionEndSec),
+                        endTime = YcbtUtils.toInstant(calculatedEndSec),
                         stages = stages
                     )
                 )
@@ -221,7 +300,6 @@ object YcbtHealthDecoder {
         return when (cmd.toInt() and 0xFF) {
             0x00 -> {
                 // Pasos, calorías y distancia
-                // Protocolo YCBT: payload de 6 bytes con campos u16 LE, o de 12 bytes con u32 LE
                 if (payload.size >= 12) {
                     val steps = YcbtUtils.readU32LE(payload, 0)
                     val cal = YcbtUtils.readU32LE(payload, 4)
@@ -253,6 +331,7 @@ object YcbtHealthDecoder {
             }
             0x03 -> {
                 // Presión arterial en vivo [systolic: 1B][diastolic: 1B]
+                // Si la longitud supera 6 bytes, contiene además temperatura dérmica (DataUnpack.unpackRealBloodData)
                 if (payload.size >= 2) {
                     val sys = payload[0].toInt() and 0xFF
                     val dia = payload[1].toInt() and 0xFF
@@ -270,6 +349,38 @@ object YcbtHealthDecoder {
                     if (temp in 30.0f..45.0f) {
                         YcbtDecodedEvent.RealtimeTemperature(temp)
                     } else null
+                } else null
+            }
+            0x0A -> {
+                // Paquete integral en tiempo real (SmartHealth Real_UploadComprehensive / dataType 1546)
+                if (payload.size >= 14) {
+                    val steps = (payload[0].toLong() and 0xFF) or
+                            ((payload[1].toLong() and 0xFF) shl 8) or
+                            ((payload[2].toLong() and 0xFF) shl 16)
+                    val dist = (payload[3].toLong() and 0xFF) or ((payload[4].toLong() and 0xFF) shl 8)
+                    val cal = (payload[5].toLong() and 0xFF) or ((payload[6].toLong() and 0xFF) shl 8)
+                    val hr = payload[7].toInt() and 0xFF
+                    val sys = payload[8].toInt() and 0xFF
+                    val dia = payload[9].toInt() and 0xFF
+                    val spo2 = payload[10].toInt() and 0xFF
+                    val tempInt = payload[12].toInt() and 0xFF
+                    val tempFloat = payload[13].toInt() and 0xFF
+                    val temp = if (tempInt in 30..45) tempInt + (tempFloat / 100f) else null
+                    val isWorn = if (payload.size > 14) (payload[14].toInt() and 0xFF) != 0 else true
+                    val battery = if (payload.size > 15) (payload[15].toInt() and 0xFF).coerceIn(0, 100) else null
+
+                    YcbtDecodedEvent.RealtimeComprehensive(
+                        steps = steps,
+                        calories = cal,
+                        distanceMeters = dist,
+                        bpm = hr,
+                        systolic = sys,
+                        diastolic = dia,
+                        spo2 = spo2,
+                        tempCelsius = temp,
+                        isWorn = isWorn,
+                        batteryPercent = battery
+                    )
                 } else null
             }
             0x0B, 0x16 -> {

@@ -94,6 +94,23 @@ object YcbtCommands {
     }
 
     /**
+     * Inicia o detiene la medición de temperatura corporal según el protocolo oficial de SmartHealth
+     * (YCBTClient.appTemperatureMeasure: Group 0x03, Cmd 0x18 / dataType 792).
+     */
+    fun setTemperatureMeasure(enable: Boolean): ByteArray {
+        val payload = byteArrayOf(if (enable) 0x01 else 0x00)
+        return YcbtFrameBuilder.build(YcbtConstants.GROUP_APP_CONTROL, YcbtConstants.CMD_APP_TEMP_MEASURE, payload)
+    }
+
+    /**
+     * Consulta el valor actual de temperatura dérmica en tiempo real
+     * (YCBTClient.getRealTemp: Group 0x02, Cmd 0x0E / dataType 526).
+     */
+    fun queryRealTemp(): ByteArray {
+        return YcbtFrameBuilder.build(YcbtConstants.GROUP_GET, YcbtConstants.CMD_GET_REAL_TEMP, ByteArray(0))
+    }
+
+    /**
      * Inicia o detiene una medición puntual bajo demanda.
      * mode: 0x00=HeartRate, 0x01=BP, 0x02=SpO2, 0x04=Temp
      */

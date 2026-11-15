@@ -14,6 +14,7 @@ import com.telat.smartring.r99.data.healthconnect.HealthConnectBridge
 import com.telat.smartring.r99.data.model.BleConnectionState
 import com.telat.smartring.r99.data.model.RingDashboardUiState
 import com.telat.smartring.r99.data.ycbt.YcbtConstants
+import com.telat.smartring.r99.data.ycbt.YcbtSleepStageType
 import com.telat.smartring.r99.worker.RingSyncWorker
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -22,10 +23,21 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import java.time.Instant
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
 import java.time.temporal.ChronoUnit
 import java.util.Collections
 import java.util.Locale
 import java.util.concurrent.TimeUnit
+
+private data class SleepSummaryMetrics(
+    val totalMinutes: Int,
+    val deepMinutes: Int,
+    val lightMinutes: Int,
+    val remMinutes: Int,
+    val awakeMinutes: Int,
+    val dateRangeStr: String
+)
 
 class RingViewModel(application: Application) : AndroidViewModel(application) {
 
@@ -344,11 +356,47 @@ class RingViewModel(application: Application) : AndroidViewModel(application) {
                     "Anillo al día (sin nuevos registros pendientes en memoria)"
                 }
 
+                // Cálculo y desglose de fases de sueño si hay sesiones descargadas
+                val latestSession = history.sleepSessions.maxByOrNull { it.endTime }
+                val sleepMetrics = if (latestSession != null) {
+                    val totSec = latestSession.stages.sumOf { it.durationSeconds }
+                    val d = (latestSession.stages.filter { it.type == YcbtSleepStageType.DEEP }.sumOf { it.durationSeconds } / 60).toInt()
+                    val l = (latestSession.stages.filter { it.type == YcbtSleepStageType.LIGHT }.sumOf { it.durationSeconds } / 60).toInt()
+                    val r = (latestSession.stages.filter { it.type == YcbtSleepStageType.REM }.sumOf { it.durationSeconds } / 60).toInt()
+                    val a = (latestSession.stages.filter { it.type == YcbtSleepStageType.AWAKE }.sumOf { it.durationSeconds } / 60).toInt()
+                    val t = (totSec / 60).toInt()
+                    val formatter = DateTimeFormatter.ofPattern("dd/MM HH:mm").withZone(ZoneId.systemDefault())
+                    val dateFormatted = "${formatter.format(latestSession.startTime)} - ${formatter.format(latestSession.endTime)}"
+                    SleepSummaryMetrics(t, d, l, r, a, dateFormatted)
+                } else {
+                    SleepSummaryMetrics(
+                        _uiState.value.lastSleepTotalMinutes,
+                        _uiState.value.lastSleepDeepMinutes,
+                        _uiState.value.lastSleepLightMinutes,
+                        _uiState.value.lastSleepRemMinutes,
+                        _uiState.value.lastSleepAwakeMinutes,
+                        _uiState.value.lastSleepDateStr
+                    )
+                }
+
+                val sleepTextUpdated = if (sleepMetrics.totalMinutes > 0) {
+                    "Último sueño: ${sleepMetrics.totalMinutes / 60}h ${sleepMetrics.totalMinutes % 60}m"
+                } else {
+                    _uiState.value.sleepStatusText
+                }
+
                 _uiState.update {
                     it.copy(
                         lastSyncTimestamp = now,
                         syncedSleepSessionsCount = it.syncedSleepSessionsCount + history.sleepSessions.size,
                         syncedHistoryRecordsCount = it.syncedHistoryRecordsCount + history.totalCount,
+                        lastSleepTotalMinutes = sleepMetrics.totalMinutes,
+                        lastSleepDeepMinutes = sleepMetrics.deepMinutes,
+                        lastSleepLightMinutes = sleepMetrics.lightMinutes,
+                        lastSleepRemMinutes = sleepMetrics.remMinutes,
+                        lastSleepAwakeMinutes = sleepMetrics.awakeMinutes,
+                        lastSleepDateStr = sleepMetrics.dateRangeStr,
+                        sleepStatusText = sleepTextUpdated,
                         statusMessage = syncMsg
                     )
                 }
@@ -533,27 +581,28 @@ class RingViewModel(application: Application) : AndroidViewModel(application) {
                 it.copy(
                     isMeasuringTemperature = true,
                     isOffWristAlert = false,
-                    statusMessage = "Midiendo temperatura dérmica..."
+                    statusMessage = "Iniciando sensor térmico y leyendo temperatura dérmica..."
                 )
             }
-            bleManager.startSpotMeasurement(0x04.toByte())
+            // Disparar comando real según protocolo SmartHealth (0x03 0x18 + polling 0x02 0x0E)
+            bleManager.startTemperatureMeasurement()
 
             var receivedRealSample = false
-            for (i in 1..15) {
+            for (i in 1..20) {
                 delay(1000)
                 if (_uiState.value.currentTemperatureCelsius != initialTemp && (_uiState.value.currentTemperatureCelsius ?: 0f) > 0f) {
                     receivedRealSample = true
                     break
                 }
             }
-            bleManager.stopSpotMeasurement(0x04.toByte())
+            bleManager.stopTemperatureMeasurement()
             _uiState.update {
                 it.copy(
                     isMeasuringTemperature = false,
                     statusMessage = if (receivedRealSample || (it.currentTemperatureCelsius ?: 0f) > 0f) {
                         "Temperatura capturada: ${String.format(Locale.getDefault(), "%.1f", it.currentTemperatureCelsius)} °C"
                     } else {
-                        "Sin lectura térmica: asegura contacto continuo con la piel"
+                        "Sin lectura térmica: coloca el sensor del anillo en contacto firme con la piel"
                     }
                 )
             }
