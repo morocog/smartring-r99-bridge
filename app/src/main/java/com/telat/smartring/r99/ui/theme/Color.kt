@@ -11,9 +11,9 @@ val DarkSurface = Color(0xFF1B1B22)
 val DarkSurfaceElevated = Color(0xFF262630)
 val DarkBorder = Color(0xFF33333F)
 
-val TextPrimary = Color(0xFFFBFBFD)
-val TextSecondary = Color(0xFFA0A0AB)
-val TextMuted = Color(0xFF6B6B76)
+val TextPrimary = Color(0xFFFFFFFF)
+val TextSecondary = Color(0xFFE2E8F0)
+val TextMuted = Color(0xFFCBD5E1)
 
 val StatusGreen = Color(0xFF22C55E)
 val StatusAmber = Color(0xFFF59E0B)

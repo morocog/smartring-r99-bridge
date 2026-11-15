@@ -27,8 +27,12 @@ import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.FileDownload
 import androidx.compose.material.icons.filled.LocalFireDepartment
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material.icons.filled.Sync
+import androidx.compose.material.icons.filled.Thermostat
+import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material.icons.filled.WaterDrop
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -93,8 +97,37 @@ fun RingDashboardScreen(
             deviceAddress = uiState.deviceAddress,
             connectionState = uiState.connectionState,
             batteryPercent = uiState.batteryPercent,
-            isCharging = uiState.isCharging
+            isCharging = uiState.isCharging,
+            onRefreshBattery = { viewModel.refreshBattery() }
         )
+
+        // 1b. Aviso de sensor sin contacto (Off-wrist)
+        if (uiState.isOffWristAlert) {
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(containerColor = StatusAmber.copy(alpha = 0.2f)),
+                shape = RoundedCornerShape(12.dp)
+            ) {
+                Row(
+                    modifier = Modifier.padding(14.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Warning,
+                        contentDescription = null,
+                        tint = StatusAmber,
+                        modifier = Modifier.size(24.dp)
+                    )
+                    Spacer(modifier = Modifier.width(10.dp))
+                    Text(
+                        text = "Sensor sin contacto: coloca el anillo firmemente en tu dedo para medir con precisión.",
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.Medium,
+                        color = TextPrimary
+                    )
+                }
+            }
+        }
 
         // 2. Estado de vinculación con Health Connect & Samsung Health
         if (!uiState.hasHealthPermissions) {
@@ -106,7 +139,7 @@ fun RingDashboardScreen(
             HealthConnectStatusCard(onOpenSettings = onOpenHealthSettings)
         }
 
-        // 3. Fila de Signos Vitales Interactivos: Pulso cardíaco y SpO2
+        // 3. Fila 1 de Signos Vitales Interactivos: Pulso cardíaco y SpO2
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(12.dp)
@@ -136,6 +169,42 @@ fun RingDashboardScreen(
                 measuringText = "Midiendo SpO2...",
                 buttonText = "Medir SpO2",
                 onMeasureClick = { viewModel.triggerSpo2Measurement() },
+                modifier = Modifier.weight(1f)
+            )
+        }
+
+        // 3b. Fila 2 de Signos Vitales Interactivos: Presión Arterial y Temperatura Dérmica
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            InteractiveVitalCard(
+                title = "Presión arterial",
+                value = if (uiState.currentBloodPressureSys != null && uiState.currentBloodPressureSys!! > 0)
+                    "${uiState.currentBloodPressureSys}/${uiState.currentBloodPressureDia}" else "--",
+                unit = "mmHg",
+                lastRecordedTime = uiState.lastBloodPressureTime,
+                icon = Icons.Default.Speed,
+                accentColor = TelatOrange,
+                isMeasuring = uiState.isMeasuringBloodPressure,
+                measuringText = "Estimando...",
+                buttonText = "Medir presión",
+                onMeasureClick = { viewModel.triggerBloodPressureMeasurement() },
+                modifier = Modifier.weight(1f)
+            )
+
+            InteractiveVitalCard(
+                title = "Temperatura dérmica",
+                value = if (uiState.currentTemperatureCelsius != null && uiState.currentTemperatureCelsius!! > 0f)
+                    "${String.format(Locale.getDefault(), "%.1f", uiState.currentTemperatureCelsius)}°" else "--",
+                unit = "°C",
+                lastRecordedTime = uiState.lastTemperatureTime,
+                icon = Icons.Default.Thermostat,
+                accentColor = TelatYellow,
+                isMeasuring = uiState.isMeasuringTemperature,
+                measuringText = "Midiendo...",
+                buttonText = "Medir temp",
+                onMeasureClick = { viewModel.triggerTemperatureMeasurement() },
                 modifier = Modifier.weight(1f)
             )
         }
@@ -197,7 +266,8 @@ private fun HeaderSection(
     deviceAddress: String,
     connectionState: BleConnectionState,
     batteryPercent: Int?,
-    isCharging: Boolean
+    isCharging: Boolean,
+    onRefreshBattery: () -> Unit = {}
 ) {
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -221,25 +291,38 @@ private fun HeaderSection(
                 Text(
                     text = if (deviceAddress.isNotBlank()) "$deviceName ($deviceAddress)" else "Buscando prefijo R99...",
                     style = MaterialTheme.typography.bodyMedium,
-                    fontSize = 12.sp,
+                    fontSize = 13.sp,
                     color = TextSecondary
                 )
             }
 
             Row(verticalAlignment = Alignment.CenterVertically) {
-                if (batteryPercent != null) {
+                // Píldora de Batería con botón para refrescar al pulsar
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(DarkSurfaceElevated)
+                        .clickable { onRefreshBattery() }
+                        .padding(horizontal = 8.dp, vertical = 6.dp)
+                ) {
                     Text(
-                        text = if (isCharging) "⚡ $batteryPercent%" else "🔋 $batteryPercent%",
-                        fontSize = 12.sp,
+                        text = if (batteryPercent != null) {
+                            if (isCharging) "⚡ $batteryPercent%" else "🔋 $batteryPercent%"
+                        } else "🔋 --%",
+                        fontSize = 13.sp,
                         fontWeight = FontWeight.SemiBold,
-                        color = if (batteryPercent > 20) StatusGreen else StatusAmber,
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(12.dp))
-                            .background(DarkSurfaceElevated)
-                            .padding(horizontal = 8.dp, vertical = 5.dp)
+                        color = if ((batteryPercent ?: 0) > 20) StatusGreen else StatusAmber
                     )
-                    Spacer(modifier = Modifier.width(8.dp))
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Icon(
+                        imageVector = Icons.Default.Refresh,
+                        contentDescription = "Refrescar batería",
+                        tint = TextSecondary,
+                        modifier = Modifier.size(13.dp)
+                    )
                 }
+                Spacer(modifier = Modifier.width(8.dp))
 
                 val (statusText, statusColor) = when (connectionState) {
                     BleConnectionState.CONNECTED -> "Conectado" to StatusGreen
@@ -265,7 +348,7 @@ private fun HeaderSection(
                     Spacer(modifier = Modifier.width(6.dp))
                     Text(
                         text = statusText,
-                        fontSize = 12.sp,
+                        fontSize = 13.sp,
                         fontWeight = FontWeight.Medium,
                         color = statusColor
                     )
@@ -418,15 +501,15 @@ private fun InteractiveVitalCard(
                 Text(
                     text = title,
                     style = MaterialTheme.typography.bodyMedium,
-                    fontSize = 12.sp,
-                    fontWeight = FontWeight.Medium,
-                    color = TextSecondary
+                    fontSize = 14.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    color = TextPrimary
                 )
                 Icon(
                     imageVector = icon,
                     contentDescription = title,
                     tint = accentColor,
-                    modifier = Modifier.size(18.dp)
+                    modifier = Modifier.size(20.dp)
                 )
             }
 
@@ -435,16 +518,17 @@ private fun InteractiveVitalCard(
             Row(verticalAlignment = Alignment.Bottom) {
                 Text(
                     text = value,
-                    fontSize = 26.sp,
+                    fontSize = 28.sp,
                     fontWeight = FontWeight.Bold,
                     color = TextPrimary
                 )
                 Spacer(modifier = Modifier.width(4.dp))
                 Text(
                     text = unit,
-                    fontSize = 12.sp,
-                    color = TextMuted,
-                    modifier = Modifier.padding(bottom = 3.dp)
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.Medium,
+                    color = TextSecondary,
+                    modifier = Modifier.padding(bottom = 4.dp)
                 )
             }
 
@@ -456,8 +540,8 @@ private fun InteractiveVitalCard(
             }
             Text(
                 text = timeText,
-                fontSize = 10.sp,
-                color = TextMuted
+                fontSize = 12.sp,
+                color = TextSecondary
             )
 
             Spacer(modifier = Modifier.height(10.dp))
@@ -468,21 +552,21 @@ private fun InteractiveVitalCard(
                     modifier = Modifier
                         .fillMaxWidth()
                         .clip(RoundedCornerShape(8.dp))
-                        .background(accentColor.copy(alpha = 0.15f))
-                        .padding(vertical = 8.dp, horizontal = 8.dp),
+                        .background(accentColor.copy(alpha = 0.2f))
+                        .padding(vertical = 10.dp, horizontal = 8.dp),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.Center
                 ) {
                     CircularProgressIndicator(
-                        modifier = Modifier.size(14.dp),
+                        modifier = Modifier.size(16.dp),
                         strokeWidth = 2.dp,
                         color = accentColor
                     )
-                    Spacer(modifier = Modifier.width(6.dp))
+                    Spacer(modifier = Modifier.width(8.dp))
                     Text(
                         text = measuringText,
-                        fontSize = 11.sp,
-                        fontWeight = FontWeight.Medium,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.SemiBold,
                         color = accentColor
                     )
                 }
@@ -499,7 +583,7 @@ private fun InteractiveVitalCard(
                         tint = accentColor
                     )
                     Spacer(modifier = Modifier.width(4.dp))
-                    Text(
+                    Text(buttonText, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = TextPrimary)
                         text = buttonText,
                         fontSize = 11.sp,
                         fontWeight = FontWeight.SemiBold,
@@ -825,13 +909,15 @@ private fun StatusFooter(message: String, lastSync: Long?, historyCount: Int) {
     ) {
         Text(
             text = "Estado: $message",
-            fontSize = 12.sp,
-            color = TextSecondary
+            fontSize = 14.sp,
+            fontWeight = FontWeight.Medium,
+            color = TextPrimary
         )
         if (historyCount > 0) {
             Text(
                 text = "Registros históricos sincronizados: $historyCount",
-                fontSize = 11.sp,
+                fontSize = 12.sp,
+                fontWeight = FontWeight.Medium,
                 color = StatusGreen
             )
         }
@@ -839,8 +925,8 @@ private fun StatusFooter(message: String, lastSync: Long?, historyCount: Int) {
             val format = SimpleDateFormat("dd/MM/yyyy HH:mm:ss", Locale.getDefault())
             Text(
                 text = "Última sincronización: ${format.format(Date(it))}",
-                fontSize = 11.sp,
-                color = TextMuted
+                fontSize = 12.sp,
+                color = TextSecondary
             )
         }
     }

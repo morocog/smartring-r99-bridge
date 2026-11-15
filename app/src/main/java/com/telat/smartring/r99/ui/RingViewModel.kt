@@ -24,6 +24,7 @@ import kotlinx.coroutines.launch
 import java.time.Instant
 import java.time.temporal.ChronoUnit
 import java.util.Collections
+import java.util.Locale
 import java.util.concurrent.TimeUnit
 
 class RingViewModel(application: Application) : AndroidViewModel(application) {
@@ -159,7 +160,67 @@ class RingViewModel(application: Application) : AndroidViewModel(application) {
                 _uiState.update {
                     it.copy(
                         batteryPercent = battery,
-                        isCharging = isCharging
+                        isCharging = isCharging,
+                        statusMessage = "Batería del anillo: $battery%${if (isCharging) " (Cargando ⚡)" else ""}"
+                    )
+                }
+            }
+        }
+
+        // 3b. Presión arterial en vivo
+        viewModelScope.launch {
+            bleManager.bloodPressureFlow.collect { (sys, dia) ->
+                val now = System.currentTimeMillis()
+                _uiState.update {
+                    it.copy(
+                        currentBloodPressureSys = sys,
+                        currentBloodPressureDia = dia,
+                        lastBloodPressureTime = now,
+                        isMeasuringBloodPressure = false,
+                        isOffWristAlert = false,
+                        statusMessage = "Presión capturada: $sys/$dia mmHg"
+                    )
+                }
+                sessionLogs.add(
+                    CsvLogEntry(
+                        timestamp = now,
+                        metricType = "BLOOD_PRESSURE",
+                        value1 = "$sys/$dia mmHg"
+                    )
+                )
+            }
+        }
+
+        // 3c. Temperatura dérmica en vivo
+        viewModelScope.launch {
+            bleManager.temperatureFlow.collect { celsius ->
+                val now = System.currentTimeMillis()
+                _uiState.update {
+                    it.copy(
+                        currentTemperatureCelsius = celsius,
+                        lastTemperatureTime = now,
+                        isMeasuringTemperature = false,
+                        isOffWristAlert = false,
+                        statusMessage = "Temperatura capturada: ${String.format(Locale.getDefault(), "%.1f", celsius)} °C"
+                    )
+                }
+                sessionLogs.add(
+                    CsvLogEntry(
+                        timestamp = now,
+                        metricType = "TEMPERATURE",
+                        value1 = "$celsius °C"
+                    )
+                )
+            }
+        }
+
+        // 3d. Estado de contacto con piel (Off-wrist)
+        viewModelScope.launch {
+            bleManager.sensorContactFlow.collect { hasContact ->
+                _uiState.update {
+                    it.copy(
+                        isOffWristAlert = !hasContact,
+                        statusMessage = if (!hasContact) "¡Aviso! Sensor sin contacto: coloca el anillo en tu dedo" else "Sensor en contacto firme"
                     )
                 }
             }
@@ -330,6 +391,13 @@ class RingViewModel(application: Application) : AndroidViewModel(application) {
         return result
     }
 
+    fun refreshBattery() {
+        if (_uiState.value.connectionState == BleConnectionState.CONNECTED) {
+            _uiState.update { it.copy(statusMessage = "Consultando batería del anillo...") }
+            bleManager.requestBatteryInfo()
+        }
+    }
+
     fun triggerHeartRateMeasurement() {
         if (_uiState.value.connectionState != BleConnectionState.CONNECTED) {
             _uiState.update { it.copy(statusMessage = "Conecta el anillo antes de medir el pulso") }
@@ -338,19 +406,35 @@ class RingViewModel(application: Application) : AndroidViewModel(application) {
         if (_uiState.value.isMeasuringHeartRate) return
 
         viewModelScope.launch {
+            val initialBpm = _uiState.value.currentHeartRate
             _uiState.update {
                 it.copy(
                     isMeasuringHeartRate = true,
+                    isOffWristAlert = false,
                     statusMessage = "Midiendo pulso cardíaco en tiempo real... (Sensor PPG activo)"
                 )
             }
             bleManager.startSpotMeasurement(YcbtConstants.MEASURE_MODE_HEART_RATE)
-            delay(20_000)
+            
+            var receivedRealSample = false
+            for (i in 1..20) {
+                delay(1000)
+                if (_uiState.value.currentHeartRate != initialBpm && _uiState.value.currentHeartRate > 0) {
+                    receivedRealSample = true
+                    break
+                }
+            }
             bleManager.stopSpotMeasurement(YcbtConstants.MEASURE_MODE_HEART_RATE)
             _uiState.update {
                 it.copy(
                     isMeasuringHeartRate = false,
-                    statusMessage = "Medición de pulso completada y sincronizada"
+                    statusMessage = if (receivedRealSample) {
+                        "¡Pulso real detectado: ${it.currentHeartRate} BPM!"
+                    } else if (it.currentHeartRate > 0) {
+                        "Pulso confirmado: ${it.currentHeartRate} BPM"
+                    } else {
+                        "Sin lectura: coloca el anillo firmemente en tu dedo e inténtalo de nuevo"
+                    }
                 )
             }
         }
@@ -364,19 +448,113 @@ class RingViewModel(application: Application) : AndroidViewModel(application) {
         if (_uiState.value.isMeasuringSpo2) return
 
         viewModelScope.launch {
+            val initialSpo2 = _uiState.value.currentSpo2
             _uiState.update {
                 it.copy(
                     isMeasuringSpo2 = true,
+                    isOffWristAlert = false,
                     statusMessage = "Midiendo SpO2 (Sensor óptico infrarrojo)... Mantén la mano en reposo"
                 )
             }
             bleManager.startSpotMeasurement(YcbtConstants.MEASURE_MODE_SPO2)
-            delay(25_000)
+
+            var receivedRealSample = false
+            for (i in 1..25) {
+                delay(1000)
+                if (_uiState.value.currentSpo2 != initialSpo2 && (_uiState.value.currentSpo2 ?: 0) > 0) {
+                    receivedRealSample = true
+                    break
+                }
+            }
             bleManager.stopSpotMeasurement(YcbtConstants.MEASURE_MODE_SPO2)
             _uiState.update {
                 it.copy(
                     isMeasuringSpo2 = false,
-                    statusMessage = "Medición de SpO2 completada y guardada en Samsung Health"
+                    statusMessage = if (receivedRealSample || (it.currentSpo2 ?: 0) > 0) {
+                        "Oxígeno SpO2 registrado: ${it.currentSpo2}%"
+                    } else {
+                        "Sin lectura de SpO2: asegúrate de no mover el dedo"
+                    }
+                )
+            }
+        }
+    }
+
+    fun triggerBloodPressureMeasurement() {
+        if (_uiState.value.connectionState != BleConnectionState.CONNECTED) {
+            _uiState.update { it.copy(statusMessage = "Conecta el anillo antes de medir presión") }
+            return
+        }
+        if (_uiState.value.isMeasuringBloodPressure) return
+
+        viewModelScope.launch {
+            val initialSys = _uiState.value.currentBloodPressureSys
+            _uiState.update {
+                it.copy(
+                    isMeasuringBloodPressure = true,
+                    isOffWristAlert = false,
+                    statusMessage = "Estimando presión arterial... Mantén la mano quieta"
+                )
+            }
+            bleManager.startSpotMeasurement(0x01.toByte())
+
+            var receivedRealSample = false
+            for (i in 1..25) {
+                delay(1000)
+                if (_uiState.value.currentBloodPressureSys != initialSys && (_uiState.value.currentBloodPressureSys ?: 0) > 0) {
+                    receivedRealSample = true
+                    break
+                }
+            }
+            bleManager.stopSpotMeasurement(0x01.toByte())
+            _uiState.update {
+                it.copy(
+                    isMeasuringBloodPressure = false,
+                    statusMessage = if (receivedRealSample || (it.currentBloodPressureSys ?: 0) > 0) {
+                        "Presión arterial estimada: ${it.currentBloodPressureSys}/${it.currentBloodPressureDia} mmHg"
+                    } else {
+                        "Sin lectura: coloca el anillo con el sensor hacia la palma del dedo"
+                    }
+                )
+            }
+        }
+    }
+
+    fun triggerTemperatureMeasurement() {
+        if (_uiState.value.connectionState != BleConnectionState.CONNECTED) {
+            _uiState.update { it.copy(statusMessage = "Conecta el anillo antes de medir temperatura") }
+            return
+        }
+        if (_uiState.value.isMeasuringTemperature) return
+
+        viewModelScope.launch {
+            val initialTemp = _uiState.value.currentTemperatureCelsius
+            _uiState.update {
+                it.copy(
+                    isMeasuringTemperature = true,
+                    isOffWristAlert = false,
+                    statusMessage = "Midiendo temperatura dérmica..."
+                )
+            }
+            bleManager.startSpotMeasurement(0x04.toByte())
+
+            var receivedRealSample = false
+            for (i in 1..15) {
+                delay(1000)
+                if (_uiState.value.currentTemperatureCelsius != initialTemp && (_uiState.value.currentTemperatureCelsius ?: 0f) > 0f) {
+                    receivedRealSample = true
+                    break
+                }
+            }
+            bleManager.stopSpotMeasurement(0x04.toByte())
+            _uiState.update {
+                it.copy(
+                    isMeasuringTemperature = false,
+                    statusMessage = if (receivedRealSample || (it.currentTemperatureCelsius ?: 0f) > 0f) {
+                        "Temperatura capturada: ${String.format(Locale.getDefault(), "%.1f", it.currentTemperatureCelsius)} °C"
+                    } else {
+                        "Sin lectura térmica: asegura contacto continuo con la piel"
+                    }
                 )
             }
         }

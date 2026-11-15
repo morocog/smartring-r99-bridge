@@ -5,6 +5,17 @@ data class HeartRateSample(
     val timestamp: Long = System.currentTimeMillis()
 )
 
+data class BloodPressureSample(
+    val systolic: Int,
+    val diastolic: Int,
+    val timestamp: Long = System.currentTimeMillis()
+)
+
+data class TemperatureSample(
+    val celsius: Float,
+    val timestamp: Long = System.currentTimeMillis()
+)
+
 data class StepsSample(
     val steps: Int,
     val calories: Int,
@@ -41,6 +52,11 @@ data class RingDashboardUiState(
     val lastHeartRateTime: Long? = null,
     val currentSpo2: Int? = null,
     val lastSpo2Time: Long? = null,
+    val currentBloodPressureSys: Int? = null,
+    val currentBloodPressureDia: Int? = null,
+    val lastBloodPressureTime: Long? = null,
+    val currentTemperatureCelsius: Float? = null,
+    val lastTemperatureTime: Long? = null,
     val totalStepsToday: Int = 0,
     val totalCaloriesToday: Int = 0,
     val totalDistanceMetersToday: Int = 0,
@@ -50,6 +66,9 @@ data class RingDashboardUiState(
     val syncedHistoryRecordsCount: Int = 0,
     val isMeasuringHeartRate: Boolean = false,
     val isMeasuringSpo2: Boolean = false,
+    val isMeasuringBloodPressure: Boolean = false,
+    val isMeasuringTemperature: Boolean = false,
+    val isOffWristAlert: Boolean = false,
     val isPeriodicSyncEnabled: Boolean = true,
     val isHealthConnectAvailable: Boolean = false,
     val hasHealthPermissions: Boolean = false,

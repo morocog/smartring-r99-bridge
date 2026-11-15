@@ -10,6 +10,9 @@ sealed class YcbtDecodedEvent {
     data class RealtimeStatus(val steps: Long, val calories: Long, val distanceMeters: Long) : YcbtDecodedEvent()
     data class RealtimeHeartRate(val bpm: Int) : YcbtDecodedEvent()
     data class RealtimeSpo2(val percent: Int) : YcbtDecodedEvent()
+    data class RealtimeBloodPressure(val systolic: Int, val diastolic: Int) : YcbtDecodedEvent()
+    data class RealtimeTemperature(val celsius: Float) : YcbtDecodedEvent()
+    data class SensorContactStatus(val hasContact: Boolean) : YcbtDecodedEvent()
     data class BatteryStatus(val percent: Int, val isCharging: Boolean) : YcbtDecodedEvent()
 }
 
@@ -246,6 +249,34 @@ object YcbtHealthDecoder {
                 if (payload.isNotEmpty()) {
                     val spo2 = payload[0].toInt() and 0xFF
                     if (spo2 in 70..100) YcbtDecodedEvent.RealtimeSpo2(spo2) else null
+                } else null
+            }
+            0x03 -> {
+                // Presión arterial en vivo [systolic: 1B][diastolic: 1B]
+                if (payload.size >= 2) {
+                    val sys = payload[0].toInt() and 0xFF
+                    val dia = payload[1].toInt() and 0xFF
+                    if (sys in 50..240 && dia in 30..150) {
+                        YcbtDecodedEvent.RealtimeBloodPressure(sys, dia)
+                    } else null
+                } else null
+            }
+            0x04 -> {
+                // Temperatura corporal en vivo
+                if (payload.size >= 2) {
+                    val integerPart = payload[0].toInt() and 0xFF
+                    val decimalPart = payload[1].toInt() and 0xFF
+                    val temp = integerPart + (decimalPart / 100f)
+                    if (temp in 30.0f..45.0f) {
+                        YcbtDecodedEvent.RealtimeTemperature(temp)
+                    } else null
+                } else null
+            }
+            0x0B, 0x16 -> {
+                // Detección de contacto con piel / desgaste
+                if (payload.isNotEmpty()) {
+                    val contact = (payload[0].toInt() and 0xFF) != 0
+                    YcbtDecodedEvent.SensorContactStatus(contact)
                 } else null
             }
             0x15 -> {

@@ -126,6 +126,15 @@ class RingBleManager(
     private val _spo2Flow = MutableSharedFlow<Int>(extraBufferCapacity = 32)
     val spo2Flow: SharedFlow<Int> = _spo2Flow.asSharedFlow()
 
+    private val _bloodPressureFlow = MutableSharedFlow<Pair<Int, Int>>(extraBufferCapacity = 32)
+    val bloodPressureFlow: SharedFlow<Pair<Int, Int>> = _bloodPressureFlow.asSharedFlow()
+
+    private val _temperatureFlow = MutableSharedFlow<Float>(extraBufferCapacity = 32)
+    val temperatureFlow: SharedFlow<Float> = _temperatureFlow.asSharedFlow()
+
+    private val _sensorContactFlow = MutableSharedFlow<Boolean>(extraBufferCapacity = 16)
+    val sensorContactFlow: SharedFlow<Boolean> = _sensorContactFlow.asSharedFlow()
+
     private val _rawLogsFlow = MutableSharedFlow<String>(extraBufferCapacity = 128)
     val rawLogsFlow: SharedFlow<String> = _rawLogsFlow.asSharedFlow()
 
@@ -612,6 +621,15 @@ class RingBleManager(
                                 is YcbtDecodedEvent.RealtimeSpo2 -> {
                                     _spo2Flow.emit(event.percent)
                                 }
+                                is YcbtDecodedEvent.RealtimeBloodPressure -> {
+                                    _bloodPressureFlow.emit(Pair(event.systolic, event.diastolic))
+                                }
+                                is YcbtDecodedEvent.RealtimeTemperature -> {
+                                    _temperatureFlow.emit(event.celsius)
+                                }
+                                is YcbtDecodedEvent.SensorContactStatus -> {
+                                    _sensorContactFlow.emit(event.hasContact)
+                                }
                                 is YcbtDecodedEvent.BatteryStatus -> {
                                     _batteryFlow.emit(Pair(event.percent, event.isCharging))
                                 }
@@ -622,15 +640,27 @@ class RingBleManager(
                 }
 
                 YcbtConstants.GROUP_GET -> {
-                    // Info de batería y versión de firmware
-                    if (frame.cmd.toInt() and 0xFF == 0x00 && frame.payload.size >= 2) {
-                        val battery = frame.payload[0].toInt() and 0xFF
+                    // Info de batería y versión de firmware (Cmd 0x00 o 0x03)
+                    val cmdInt = frame.cmd.toInt() and 0xFF
+                    if ((cmdInt == 0x00 || cmdInt == 0x03) && frame.payload.isNotEmpty()) {
+                        val b0 = frame.payload[0].toInt() and 0xFF
+                        val b1 = if (frame.payload.size > 1) frame.payload[1].toInt() and 0xFF else -1
+                        val battery = when {
+                            b0 in 1..100 -> b0
+                            b1 in 1..100 -> b1
+                            else -> b0.coerceIn(0, 100)
+                        }
                         coroutineScope.launch {
-                            _batteryFlow.emit(Pair(battery.coerceIn(0, 100), false))
+                            _batteryFlow.emit(Pair(battery, false))
                         }
                     }
                 }
             }
         }
+    }
+
+    fun requestBatteryInfo() {
+        Log.i(TAG, "Solicitando lectura fresca de batería al anillo...")
+        sendYcbtCommand(YcbtCommands.getDeviceInfo())
     }
 }
