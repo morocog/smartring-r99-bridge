@@ -26,31 +26,71 @@ object YcbtConstants {
     const val GROUP_DEV_CONTROL: Byte = 0x04
     const val GROUP_HEALTH: Byte = 0x05
     const val GROUP_REAL: Byte = 0x06
+    const val GROUP_CUSTOMIZE: Byte = 0x0D
+
+    // Opcodes de configuración (Setting Group 0x01)
+    const val CMD_SET_TIME: Byte = 0x00
+    const val CMD_SET_GOAL: Byte = 0x02
+    const val CMD_SET_USER_INFO: Byte = 0x03
+    const val CMD_SET_UNIT: Byte = 0x04
+    const val CMD_SET_HEART_ALARM: Byte = 0x0B
+    const val CMD_SET_HEART_MONITOR: Byte = 0x0C
+    const val CMD_SET_RESTORE_FACTORY: Byte = 0x0E // Constants.DATATYPE.SettingRestoreFactory = 270
+    const val CMD_SET_TEMP_ALARM: Byte = 0x1F
+    const val CMD_SET_TEMP_MONITOR: Byte = 0x20
+    const val CMD_SET_SPO2_MONITOR: Byte = 0x26
+    const val CMD_SET_SPO2_ALARM: Byte = 0x39
+    const val CMD_SET_VIBRATION_INTENSITY: Byte = 0x3C
 
     // Comandos de consulta de historial (Health Group 0x05)
     const val QUERY_SPORT_STEPS: Byte = 0x02    // Responde con tramas 0x11 (registros de 14 bytes)
     const val QUERY_SLEEP: Byte = 0x04          // Responde con tramas 0x13 (longitud variable)
     const val QUERY_HEART_RATE: Byte = 0x06     // Responde con tramas 0x15 (registros de 6 bytes)
     const val QUERY_BLOOD_PRESSURE: Byte = 0x08 // Responde con tramas 0x17 (registros de 8 bytes)
-    const val QUERY_COMBINED_VITALS: Byte = 0x09 // Registro combinado de 20 bytes (pasos acumulados, spo2, pulso, temp)
+    const val QUERY_COMBINED_VITALS: Byte = 0x09 // Registro combinado de 20 bytes (Health_HistoryAll: pasos, hr, bp, spo2, resp, hrv, temp)
     const val QUERY_SPO2: Byte = 0x1A.toByte()  // Responde con tramas 0x22 (registros de 6 bytes)
     const val QUERY_TEMP: Byte = 0x1E.toByte()  // Responde con tramas 0x26 (registros de 7 bytes)
 
-    // Opcodes específicos de temperatura y control del SDK SmartHealth (Yucheng)
-    const val CMD_GET_DEVICE_SUPPORT_FUNCTION: Byte = 0x01 // Group 0x02, Cmd 0x01 (dataType 513)
-    const val CMD_GET_REAL_TEMP: Byte = 0x0E        // Group 0x02, Cmd 0x0E (dataType 526)
-    const val CMD_APP_TEMP_MEASURE: Byte = 0x18     // Group 0x03, Cmd 0x18 (dataType 792)
+    // Comandos de borrado de historial (Health Group 0x05)
+    const val DELETE_SPORT_STEPS: Byte = 0x40
+    const val DELETE_SLEEP: Byte = 0x41
+    const val DELETE_HEART_RATE: Byte = 0x42
+    const val DELETE_BLOOD_PRESSURE: Byte = 0x43
+    const val DELETE_COMBINED_VITALS: Byte = 0x44
+
+    // Opcodes de consulta inmediata (Get Group 0x02)
+    const val CMD_GET_DEVICE_INFO: Byte = 0x00              // dataType 512
+    const val CMD_GET_DEVICE_SUPPORT_FUNCTION: Byte = 0x01  // dataType 513
+    const val CMD_GET_REAL_TEMP: Byte = 0x0E                // dataType 526
+    const val CMD_GET_REAL_BLOOD_OXYGEN: Byte = 0x11        // dataType 529
+    const val CMD_GET_ALL_REAL_DATA: Byte = 0x20            // dataType 544
+
+    // Opcodes de control desde App (AppControl Group 0x03)
+    const val CMD_APP_FIND_DEVICE: Byte = 0x00              // dataType 768
+    const val CMD_APP_BLOOD_CALIBRATION: Byte = 0x03        // dataType 771
+    const val CMD_APP_REAL_SPORT: Byte = 0x09               // dataType 777
+    const val CMD_APP_CONTROL_TAKE_PHOTO: Byte = 0x0E       // dataType 782
+    const val CMD_APP_TEMP_MEASURE: Byte = 0x18             // dataType 792
+    const val CMD_APP_START_MEASUREMENT: Byte = 0x2F        // dataType 815
 
     // Opcodes de control del dispositivo (Group 0x04 - DevControl)
-    const val CMD_DEV_MEASURE_RESULT: Byte = 0x0E      // Group 0x04, Cmd 0x0E (dataType 1038)
-    const val CMD_DEV_MEASURE_STATUS_RESULTS: Byte = 0x13 // Group 0x04, Cmd 0x13 (dataType 1043)
+    const val CMD_DEV_TAKE_PHOTO: Byte = 0x03               // dataType 1027
+    const val CMD_DEV_MEASURE_RESULT: Byte = 0x0E           // dataType 1038
+    const val CMD_DEV_MEASURE_STATUS_RESULTS: Byte = 0x13   // dataType 1043
+
+    // Opcodes de personalización / gestos táctiles (Group 0x0D - Customize)
+    const val CMD_CUSTOMIZE_WIT: Byte = 0x02                // dataType 3330
 
     // Opcodes de telemetría continua (Group 0x06 - Real)
-    const val REAL_UPLOAD_HEART: Byte = 0x01        // Group 0x06, Cmd 0x01 (dataType 1537)
-    const val REAL_UPLOAD_SPO2: Byte = 0x02         // Group 0x06, Cmd 0x02 (dataType 1538)
-    const val REAL_UPLOAD_BLOOD: Byte = 0x03        // Group 0x06, Cmd 0x03 (dataType 1539)
-    const val REAL_UPLOAD_TEMP: Byte = 0x04         // Group 0x06, Cmd 0x04 (dataType 1540)
-    const val REAL_UPLOAD_COMPREHENSIVE: Byte = 0x0A // Group 0x06, Cmd 0x0A (dataType 1546)
+    const val REAL_UPLOAD_SPORT: Byte = 0x00                // dataType 1536
+    const val REAL_UPLOAD_HEART: Byte = 0x01                // dataType 1537
+    const val REAL_UPLOAD_SPO2: Byte = 0x02                 // dataType 1538
+    const val REAL_UPLOAD_BLOOD: Byte = 0x03                // dataType 1539 (SBP, DBP, HR, HRV, SpO2, Temp)
+    const val REAL_UPLOAD_PPG: Byte = 0x04                  // dataType 1540 (trama raw PPG, NO temperatura)
+    @Deprecated("0x06 0x04 es Real_UploadPPG (raw PPG); usar REAL_UPLOAD_COMPREHENSIVE o REAL_UPLOAD_BLOOD")
+    const val REAL_UPLOAD_TEMP: Byte = 0x04
+    const val REAL_UPLOAD_RESPIRATORY_RATE: Byte = 0x07     // dataType 1543
+    const val REAL_UPLOAD_COMPREHENSIVE: Byte = 0x0A        // dataType 1546
 
     // Constantes de fases de sueño según SmartHealth DataUnpack (case 4)
     const val SLEEP_TAG_DEEP = 241   // 0xF1
@@ -62,7 +102,14 @@ object YcbtConstants {
     const val MEASURE_MODE_HEART_RATE: Byte = 0x00
     const val MEASURE_MODE_BP: Byte = 0x01
     const val MEASURE_MODE_SPO2: Byte = 0x02
+    const val MEASURE_MODE_RESPIRATORY_RATE: Byte = 0x03
     const val MEASURE_MODE_TEMP: Byte = 0x04
+    const val MEASURE_MODE_BLOOD_SUGAR: Byte = 0x05
+    const val MEASURE_MODE_URIC_ACID: Byte = 0x06
+    const val MEASURE_MODE_BLOOD_KETONE: Byte = 0x07
+    const val MEASURE_MODE_BLOOD_FAT: Byte = 0x09
+    const val MEASURE_MODE_HRV: Byte = 0x0A
+    const val MEASURE_MODE_PRESSURE: Byte = 0x0C
 
     // Códigos de error estándar YCBT (según YCBTClientImpl.isError)
     const val ERROR_UNSUPPORTED_CMD: Byte = 0xFB.toByte() // 251
@@ -181,8 +228,8 @@ class YcbtFrameAssembler {
             val totalLength = (buffer[2].toInt() and 0xFF) or ((buffer[3].toInt() and 0xFF) shl 8)
             val group = buffer[0]
 
-            // Validación de cabecera plausible (grupos 0x01 al 0x14 y 0x7E OtaUI, longitud mínima 6 bytes y máxima 1024)
-            if (group < 0x01 || (group > 0x14 && group != 0x7E.toByte()) || totalLength < 6 || totalLength > 1024) {
+            // Validación de cabecera plausible (grupos 0x01 al 0x14 y 0x7E OtaUI, longitud mínima 6 bytes y máxima 4096)
+            if (group < 0x01 || (group > 0x14 && group != 0x7E.toByte()) || totalLength < 6 || totalLength > 4096) {
                 buffer.removeAt(0) // Resincronizar descartando un byte corrupto
                 continue
             }

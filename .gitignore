@@ -12,3 +12,4 @@ local.properties
 *.zip
 apk_output/
 app/build/
+.kotlin/

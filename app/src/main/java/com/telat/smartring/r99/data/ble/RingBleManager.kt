@@ -24,15 +24,23 @@ import com.telat.smartring.r99.data.model.SleepState
 import com.telat.smartring.r99.data.model.StepsSample
 import com.telat.smartring.r99.data.parser.HeartRateDecoder
 import com.telat.smartring.r99.data.parser.TelemetryParser
+import com.telat.smartring.r99.data.ycbt.YcbtBloodPressureRecord
 import com.telat.smartring.r99.data.ycbt.YcbtCommands
 import com.telat.smartring.r99.data.ycbt.YcbtConstants
+import com.telat.smartring.r99.data.ycbt.YcbtCrc16
 import com.telat.smartring.r99.data.ycbt.YcbtDecodedEvent
+import com.telat.smartring.r99.data.ycbt.YcbtDeviceCapabilities
+import com.telat.smartring.r99.data.ycbt.YcbtDeviceInfo
 import com.telat.smartring.r99.data.ycbt.YcbtFrame
 import com.telat.smartring.r99.data.ycbt.YcbtFrameAssembler
 import com.telat.smartring.r99.data.ycbt.YcbtHealthDecoder
+import com.telat.smartring.r99.data.ycbt.YcbtHeartRateRecord
 import com.telat.smartring.r99.data.ycbt.YcbtHistorySyncResult
+import com.telat.smartring.r99.data.ycbt.YcbtHrvRecord
+import com.telat.smartring.r99.data.ycbt.YcbtRespiratoryRateRecord
 import com.telat.smartring.r99.data.ycbt.YcbtTemperatureRecord
 import com.telat.smartring.r99.data.ycbt.YcbtSpo2Record
+import com.telat.smartring.r99.data.ycbt.YcbtUtils
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -88,6 +96,7 @@ class RingBleManager(
     private var ycbtStreamCharacteristic: BluetoothGattCharacteristic? = null
 
     private var keepAliveJob: Job? = null
+    private var spotPollingJob: Job? = null
     private var isScanning = false
 
     // Control de consultas de historial YCBT
@@ -138,6 +147,27 @@ class RingBleManager(
 
     private val _temperatureFlow = MutableSharedFlow<Float>(extraBufferCapacity = 32)
     val temperatureFlow: SharedFlow<Float> = _temperatureFlow.asSharedFlow()
+
+    private val _hrvFlow = MutableSharedFlow<Int>(extraBufferCapacity = 32)
+    val hrvFlow: SharedFlow<Int> = _hrvFlow.asSharedFlow()
+
+    private val _respiratoryRateFlow = MutableSharedFlow<Int>(extraBufferCapacity = 32)
+    val respiratoryRateFlow: SharedFlow<Int> = _respiratoryRateFlow.asSharedFlow()
+
+    private val _deviceInfoFlow = MutableStateFlow<YcbtDeviceInfo?>(null)
+    val deviceInfoFlow: StateFlow<YcbtDeviceInfo?> = _deviceInfoFlow.asStateFlow()
+
+    private val _deviceCapabilitiesFlow = MutableStateFlow<YcbtDeviceCapabilities?>(null)
+    val deviceCapabilitiesFlow: StateFlow<YcbtDeviceCapabilities?> = _deviceCapabilitiesFlow.asStateFlow()
+
+    private val _historySyncResultFlow = MutableSharedFlow<YcbtHistorySyncResult>(replay = 1, extraBufferCapacity = 8)
+    val historySyncResultFlow: SharedFlow<YcbtHistorySyncResult> = _historySyncResultFlow.asSharedFlow()
+
+    private val _cameraShutterEventFlow = MutableSharedFlow<Unit>(extraBufferCapacity = 4)
+    val cameraShutterEventFlow: SharedFlow<Unit> = _cameraShutterEventFlow.asSharedFlow()
+
+    private val _activeGestureModeFlow = MutableStateFlow(0)
+    val activeGestureModeFlow: StateFlow<Int> = _activeGestureModeFlow.asStateFlow()
 
     private val _sensorContactFlow = MutableSharedFlow<Boolean>(extraBufferCapacity = 16)
     val sensorContactFlow: SharedFlow<Boolean> = _sensorContactFlow.asSharedFlow()
@@ -251,6 +281,8 @@ class RingBleManager(
 
     fun disconnect() {
         stopKeepAlive()
+        spotPollingJob?.cancel()
+        spotPollingJob = null
         ycbtAssembler.reset()
         activeQueryDeferred?.cancel()
         activeQueryDeferred = null
@@ -287,6 +319,16 @@ class RingBleManager(
         val gatt = bluetoothGatt ?: return false
         coroutineScope.launch {
             sendYcbtCommandSequential(frame)
+        }
+        return true
+    }
+
+    fun sendYcbtCommands(frames: List<ByteArray>): Boolean {
+        if (ycbtCommandCharacteristic == null || bluetoothGatt == null) return false
+        coroutineScope.launch(Dispatchers.IO) {
+            for (frame in frames) {
+                sendYcbtCommandSequential(frame)
+            }
         }
         return true
     }
@@ -374,8 +416,75 @@ class RingBleManager(
     }
 
     /**
+     * Combina registros de tablas dedicadas y Health_HistoryAll (05 09),
+     * emite los valores más recientes hacia los flujos reactivos y retorna el resultado consolidado.
+     */
+    private suspend fun buildAndEmitHistoryResult(
+        sportRecords: List<com.telat.smartring.r99.data.ycbt.YcbtSportRecord> = emptyList(),
+        sleepSessions: List<com.telat.smartring.r99.data.ycbt.YcbtSleepSession> = emptyList(),
+        hrRecords: List<YcbtHeartRateRecord> = emptyList(),
+        bpRecords: List<YcbtBloodPressureRecord> = emptyList(),
+        spo2Records: List<YcbtSpo2Record> = emptyList(),
+        tempRecords: List<YcbtTemperatureRecord> = emptyList(),
+        combinedBytes: ByteArray
+    ): YcbtHistorySyncResult {
+        val combinedRecords = YcbtHealthDecoder.decodeCombinedVitals(combinedBytes)
+        Log.i(TAG, "Historial combinado (05 09) decodificado: ${combinedRecords.size} registros")
+
+        val allHr = (hrRecords + combinedRecords.mapNotNull { rec ->
+            rec.heartRate?.let { YcbtHeartRateRecord(rec.timestamp, it) }
+        }).distinctBy { it.timestamp }
+
+        val allBp = (bpRecords + combinedRecords.mapNotNull { rec ->
+            val sys = rec.systolic
+            val dia = rec.diastolic
+            if (sys != null && dia != null) YcbtBloodPressureRecord(rec.timestamp, sys, dia) else null
+        }).distinctBy { it.timestamp }
+
+        val allSpo2 = (spo2Records + combinedRecords.mapNotNull { rec ->
+            rec.spo2?.let { YcbtSpo2Record(rec.timestamp, it) }
+        }).distinctBy { it.timestamp }
+
+        val allTemp = (tempRecords + combinedRecords.mapNotNull { rec ->
+            rec.tempCelsius?.let { YcbtTemperatureRecord(rec.timestamp, it) }
+        }).distinctBy { it.timestamp }
+
+        val allHrv = combinedRecords.mapNotNull { rec ->
+            rec.hrv?.let { YcbtHrvRecord(rec.timestamp, it) }
+        }.distinctBy { it.timestamp }
+
+        val allResp = combinedRecords.mapNotNull { rec ->
+            rec.respiratoryRate?.let { YcbtRespiratoryRateRecord(rec.timestamp, it) }
+        }.distinctBy { it.timestamp }
+
+        val maxStepsCombined = combinedRecords.maxOfOrNull { it.steps } ?: 0
+        if (maxStepsCombined > 0) {
+            _consolidatedStepsFlow.emit(StepsSample(steps = maxStepsCombined, calories = 0, distanceMeters = 0))
+        }
+        allHr.maxByOrNull { it.timestamp }?.let { _heartRateFlow.emit(HeartRateSample(bpm = it.bpm, timestamp = it.timestamp.toEpochMilli())) }
+        allBp.maxByOrNull { it.timestamp }?.let { _bloodPressureFlow.emit(Pair(it.systolic, it.diastolic)) }
+        allSpo2.maxByOrNull { it.timestamp }?.let { _spo2Flow.emit(it.percent) }
+        allTemp.maxByOrNull { it.timestamp }?.let { _temperatureFlow.emit(it.celsius) }
+        allHrv.maxByOrNull { it.timestamp }?.let { _hrvFlow.emit(it.hrvMs) }
+        allResp.maxByOrNull { it.timestamp }?.let { _respiratoryRateFlow.emit(it.rpm) }
+
+        val result = YcbtHistorySyncResult(
+            sportRecords = sportRecords,
+            sleepSessions = sleepSessions,
+            heartRateRecords = allHr,
+            spo2Records = allSpo2,
+            temperatureRecords = allTemp,
+            bloodPressureRecords = allBp,
+            hrvRecords = allHrv,
+            respiratoryRateRecords = allResp
+        )
+        _historySyncResultFlow.emit(result)
+        return result
+    }
+
+    /**
      * Sincroniza secuencialmente todo el historial almacenado en la memoria flash del anillo (YCBT)
-     * para pasos/deporte, sueño profundo/ligero/REM, pulso y SpO2.
+     * siguiendo el orden oficial de DataSyncUtils (05 02, 05 04, 05 06, 05 08, 05 09 + fallbacks 1A/1E).
      */
     suspend fun syncAllHistory(): YcbtHistorySyncResult = historySyncMutex.withLock {
         if (ycbtCommandCharacteristic == null || bluetoothGatt == null) {
@@ -386,104 +495,133 @@ class RingBleManager(
         Log.i(TAG, "Iniciando descarga secuencial de historial YCBT desde el anillo...")
         _connectionState.value = BleConnectionState.SYNCING
 
-        // 1. Descarga de historial deportivo / pasos
         val sportBytes = queryHistoryBlock(YcbtConstants.QUERY_SPORT_STEPS)
         val sportRecords = YcbtHealthDecoder.decodeSport(sportBytes)
-        Log.i(TAG, "Historial deportivo descargado: ${sportRecords.size} bloques")
+        Log.i(TAG, "Historial deportivo (05 02): ${sportRecords.size} bloques")
 
-        // 2. Descarga de sesiones de sueño
         val sleepBytes = queryHistoryBlock(YcbtConstants.QUERY_SLEEP)
         val sleepSessions = YcbtHealthDecoder.decodeSleep(sleepBytes)
-        Log.i(TAG, "Historial de sueño descargado: ${sleepSessions.size} sesiones")
+        Log.i(TAG, "Historial de sueño (05 04): ${sleepSessions.size} sesiones")
 
-        // 3. Descarga de historial de frecuencia cardíaca
         val hrBytes = queryHistoryBlock(YcbtConstants.QUERY_HEART_RATE)
         val hrRecords = YcbtHealthDecoder.decodeHeartRate(hrBytes)
-        Log.i(TAG, "Historial de frecuencia cardíaca descargado: ${hrRecords.size} muestras")
+        Log.i(TAG, "Historial HR (05 06): ${hrRecords.size} muestras")
 
-        // 4. Descarga de historial de saturación de oxígeno (SpO2)
-        val spo2Bytes = queryHistoryBlock(YcbtConstants.QUERY_SPO2)
-        val spo2Records = YcbtHealthDecoder.decodeSpo2(spo2Bytes)
-        Log.i(TAG, "Historial de SpO2 dedicado descargado: ${spo2Records.size} muestras")
+        val bpBytes = queryHistoryBlock(YcbtConstants.QUERY_BLOOD_PRESSURE)
+        val bpRecords = YcbtHealthDecoder.decodeBloodPressure(bpBytes)
+        Log.i(TAG, "Historial BP (05 08): ${bpRecords.size} muestras")
 
-        // 5. Descarga de registros combinados (05 09: Vitals diarios, SpO2, Pasos)
         val combinedBytes = queryHistoryBlock(YcbtConstants.QUERY_COMBINED_VITALS)
-        val combinedRecords = YcbtHealthDecoder.decodeCombinedVitals(combinedBytes)
-        Log.i(TAG, "Historial combinado (05 09) descargado: ${combinedRecords.size} registros")
 
-        // 6. Descarga de registros de temperatura dérmica (05 1E)
-        val tempBytes = queryHistoryBlock(YcbtConstants.QUERY_TEMP)
-        val tempRecords = YcbtHealthDecoder.decodeTemperature(tempBytes)
-        Log.i(TAG, "Historial de temperatura descargado: ${tempRecords.size} muestras")
-
-        val combinedSpo2 = combinedRecords.mapNotNull { rec ->
-            rec.spo2?.let { com.telat.smartring.r99.data.ycbt.YcbtSpo2Record(rec.timestamp, it) }
-        }
-        val allSpo2 = (spo2Records + combinedSpo2).distinctBy { it.timestamp }
-
-        // Si los registros combinados tienen pasos acumulados del día, actualizar telemetría
-        val maxStepsCombined = combinedRecords.maxOfOrNull { it.steps } ?: 0
-        if (maxStepsCombined > 0) {
-            coroutineScope.launch {
-                _consolidatedStepsFlow.emit(StepsSample(steps = maxStepsCombined, calories = 0, distanceMeters = 0))
-            }
-        }
-
-        // Unificar mediciones de temperatura de historial dedicado (05 1E) y combinado (05 09)
-        val combinedTemp = combinedRecords.mapNotNull { rec ->
-            rec.tempCelsius?.let { YcbtTemperatureRecord(rec.timestamp, it) }
-        }
-        val allTemp = (tempRecords + combinedTemp).distinctBy { it.timestamp }
-
-        // Si hay registros históricos de temperatura, emitir la más reciente a la UI
-        allTemp.maxByOrNull { it.timestamp }?.let { latestTemp ->
-            coroutineScope.launch {
-                _temperatureFlow.emit(latestTemp.celsius)
-            }
-        }
-
-        _connectionState.value = BleConnectionState.CONNECTED
-
-        return YcbtHistorySyncResult(
+        val result = buildAndEmitHistoryResult(
             sportRecords = sportRecords,
             sleepSessions = sleepSessions,
-            heartRateRecords = hrRecords,
-            spo2Records = allSpo2,
-            temperatureRecords = allTemp
+            hrRecords = hrRecords,
+            bpRecords = bpRecords,
+            combinedBytes = combinedBytes
+        )
+
+        _connectionState.value = BleConnectionState.CONNECTED
+        return result
+    }
+
+    /**
+     * Sincronización enfocada tras finalizar medición puntual en hardware (0x04 0x0E).
+     * Descarga Health_HistoryAll (0x05 0x09) donde el anillo R99 almacena SpO2, HRV y RespRate,
+     * además de las tablas dedicadas de Pulso (05 06) o Presión (05 08).
+     */
+    suspend fun syncAfterSpotMeasurement(measureType: Int): YcbtHistorySyncResult = historySyncMutex.withLock {
+        if (ycbtCommandCharacteristic == null || bluetoothGatt == null) {
+            return YcbtHistorySyncResult()
+        }
+
+        Log.i(TAG, "Sincronizando post-medición puntual (measureType=$measureType) vía 0x05 0x09...")
+        if (measureType == YcbtConstants.MEASURE_MODE_SPO2.toInt()) {
+            sendYcbtCommandSequential(YcbtCommands.queryRealBloodOxygen())
+        }
+
+        val combinedBytes = queryHistoryBlock(YcbtConstants.QUERY_COMBINED_VITALS)
+        val hrRecords = if (measureType == YcbtConstants.MEASURE_MODE_HEART_RATE.toInt()) {
+            YcbtHealthDecoder.decodeHeartRate(queryHistoryBlock(YcbtConstants.QUERY_HEART_RATE))
+        } else emptyList()
+        val bpRecords = if (measureType == YcbtConstants.MEASURE_MODE_BP.toInt()) {
+            YcbtHealthDecoder.decodeBloodPressure(queryHistoryBlock(YcbtConstants.QUERY_BLOOD_PRESSURE))
+        } else emptyList()
+
+        return buildAndEmitHistoryResult(
+            hrRecords = hrRecords,
+            bpRecords = bpRecords,
+            combinedBytes = combinedBytes
         )
     }
 
-    /**
-     * Inicia protocolo de medición puntual de temperatura corporal en el anillo:
-     * Dispara YCBTClient.triggerMeasurement(enable=true, mode=0x04) (0x03 0x2F 0x01 0x04).
-     * El anillo activa su termistor y devuelve el resultado vía DevControl (0x04 0x13 / 0x04 0x0E).
-     */
-    fun startTemperatureMeasurement() {
-        Log.i(TAG, "Iniciando medición puntual de temperatura corporal (0x03 0x2F mode=4)...")
-        sendYcbtCommand(YcbtCommands.triggerMeasurement(enable = true, mode = YcbtConstants.MEASURE_MODE_TEMP))
+    private fun startSpotPollingLoop(mode: Byte) {
+        spotPollingJob?.cancel()
+        spotPollingJob = coroutineScope.launch(Dispatchers.IO) {
+            delay(3_500L)
+            while (isActive && _connectionState.value == BleConnectionState.CONNECTED) {
+                if (mode == YcbtConstants.MEASURE_MODE_SPO2) {
+                    sendYcbtCommandSequential(YcbtCommands.queryRealBloodOxygen())
+                }
+                delay(4_000L)
+            }
+        }
     }
 
     /**
-     * Detiene protocolo de medición de temperatura corporal.
+     * Inicia protocolo dual de medición puntual de temperatura corporal en el anillo:
+     * 1) Dispara appStartMeasurement(1, 4) (0x03 0x2F 0x01 0x04) para recepción 0x06 0x0A / 0x04 0x0E.
+     * 2) Dispara appTemperatureMeasure(1) (0x03 0x18 0x01) + sondeo 0x02 0x0E / 0x02 0x20 cada 3.5s.
+     */
+    fun startTemperatureMeasurement() {
+        Log.i(TAG, "Iniciando medición dual de temperatura corporal (0x03 0x2F mode=4 + 0x03 0x18 + polling 0x02 0x0E)...")
+        coroutineScope.launch(Dispatchers.IO) {
+            sendYcbtCommandSequential(YcbtCommands.triggerMeasurement(enable = true, mode = YcbtConstants.MEASURE_MODE_TEMP))
+            sendYcbtCommandSequential(YcbtCommands.setTemperatureMeasure(enable = true))
+        }
+        startSpotPollingLoop(YcbtConstants.MEASURE_MODE_TEMP)
+    }
+
+    /**
+     * Detiene protocolo dual de medición de temperatura corporal.
      */
     fun stopTemperatureMeasurement() {
         Log.i(TAG, "Deteniendo medición de temperatura corporal...")
-        sendYcbtCommand(YcbtCommands.triggerMeasurement(enable = false, mode = YcbtConstants.MEASURE_MODE_TEMP))
+        spotPollingJob?.cancel()
+        spotPollingJob = null
+        coroutineScope.launch(Dispatchers.IO) {
+            sendYcbtCommandSequential(YcbtCommands.triggerMeasurement(enable = false, mode = YcbtConstants.MEASURE_MODE_TEMP))
+            sendYcbtCommandSequential(YcbtCommands.setTemperatureMeasure(enable = false))
+        }
     }
 
     fun startSpotMeasurement(mode: Byte) {
+        if (mode == YcbtConstants.MEASURE_MODE_TEMP) {
+            startTemperatureMeasurement()
+            return
+        }
         Log.i(TAG, "Iniciando medicion puntual (mode 0x${Integer.toHexString(mode.toInt() and 0xFF)})...")
-        val cmd = YcbtCommands.triggerMeasurement(enable = true, mode = mode)
-        sendYcbtCommand(cmd)
+        sendYcbtCommand(YcbtCommands.triggerMeasurement(enable = true, mode = mode))
+        if (mode == YcbtConstants.MEASURE_MODE_SPO2 || mode == YcbtConstants.MEASURE_MODE_BP || mode == YcbtConstants.MEASURE_MODE_HRV) {
+            startSpotPollingLoop(mode)
+        } else {
+            spotPollingJob?.cancel()
+            spotPollingJob = null
+        }
     }
 
     fun stopSpotMeasurement(mode: Byte) {
+        if (mode == YcbtConstants.MEASURE_MODE_TEMP) {
+            stopTemperatureMeasurement()
+            return
+        }
         Log.i(TAG, "Deteniendo medicion puntual (mode 0x${Integer.toHexString(mode.toInt() and 0xFF)})...")
-        val cmd = YcbtCommands.triggerMeasurement(enable = false, mode = mode)
-        sendYcbtCommand(cmd)
+        spotPollingJob?.cancel()
+        spotPollingJob = null
+        sendYcbtCommand(YcbtCommands.triggerMeasurement(enable = false, mode = mode))
     }
 
-    private suspend fun queryHistoryBlock(queryCmd: Byte): ByteArray {
+    private suspend fun queryHistoryBlock(queryCmd: Byte, timeoutMs: Long = 6_000L): ByteArray {
         val deferred = CompletableDeferred<ByteArray>()
         synchronized(currentQueryBuffer) {
             currentQueryBuffer.clear()
@@ -494,7 +632,7 @@ class RingBleManager(
         val requestBytes = YcbtCommands.queryHistory(queryCmd)
         sendYcbtCommandSequential(requestBytes)
 
-        val result = withTimeoutOrNull(6_000L) {
+        val result = withTimeoutOrNull(timeoutMs) {
             deferred.await()
         }
 
@@ -552,6 +690,8 @@ class RingBleManager(
             } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
                 Log.w(TAG, "Desconectado del Smart Ring (status: $status)")
                 stopKeepAlive()
+                spotPollingJob?.cancel()
+                spotPollingJob = null
                 ycbtAssembler.reset()
                 activeQueryDeferred?.cancel()
                 activeQueryDeferred = null
@@ -628,30 +768,30 @@ class RingBleManager(
 
                 // Secuencia oficial de inicialización YCBT de forma estrictamente secuencial
                 if (ycbtCommandCharacteristic != null) {
-                    Log.i(TAG, "Ejecutando protocolo de inicialización YCBT secuencial (Hora, Monitores 30m, Live Push, Hardware Caps)...")
+                    Log.i(TAG, "Ejecutando protocolo de inicialización YCBT secuencial...")
 
-                    // 1. Sincronización horaria
+                    // 1. Sincronización horaria y unidades métricas / perfil
                     sendYcbtCommandSequential(YcbtCommands.setTime())
+                    sendYcbtCommandSequential(YcbtCommands.settingUnit())
+                    sendYcbtCommandSequential(YcbtCommands.settingUserInfo())
 
-                    // 2. Consultar funciones de hardware y sensores soportados por el firmware
+                    // 2. Consultar funciones de hardware y estado de batería / firmware
                     sendYcbtCommandSequential(YcbtCommands.getDeviceSupportFunction())
-
-                    // 3. Activar monitores en cadencia fija obligatoria de 30 minutos
-                    val monitorCmds = YcbtCommands.enable30MinMonitors(intervalMinutes = 30)
-                    for (cmd in monitorCmds) {
-                        sendYcbtCommandSequential(cmd)
-                    }
-
-                    // 4. Activar telemetría continua
-                    sendYcbtCommandSequential(YcbtCommands.enableLiveStatusPush())
-
-                    // 5. Solicitar info del dispositivo (batería)
                     sendYcbtCommandSequential(YcbtCommands.getDeviceInfo())
 
-                    // 6. Sincronización inicial automática de historial (sueño, temperatura, vitals)
+                    // 3. Activar monitores continuos (30m por defecto) y flujo en tiempo real
+                    for (cmd in YcbtCommands.enablePeriodicMonitors(intervalMinutes = 30)) {
+                        sendYcbtCommandSequential(cmd)
+                    }
+                    sendYcbtCommandSequential(YcbtCommands.enableLiveStatusPush())
+
+                    // 4. Consulta puntual inicial de SpO2 (0x02 0x11)
+                    sendYcbtCommandSequential(YcbtCommands.queryRealBloodOxygen())
+
+                    // 5. Sincronización inicial automática de historial (pasos, sueño, pulso, presión, SpO2/HRV/Resp)
                     coroutineScope.launch {
-                        delay(1500)
-                        Log.i(TAG, "Iniciando descarga inicial de historial YCBT (sueño, temperatura y vitals)...")
+                        delay(1200)
+                        Log.i(TAG, "Iniciando descarga inicial de historial YCBT (05 02/04/06/08/09)...")
                         syncAllHistory()
                     }
                 } else {
@@ -742,18 +882,31 @@ class RingBleManager(
                     // Historial de salud (0x05)
                     val cmdInt = frame.cmd.toInt() and 0xFF
                     val isQuerySummaryPacket = cmdInt == (activeQueryCmd?.toInt()?.and(0xFF))
-                    
-                    if (frame.cmd == YcbtConstants.TERMINAL_BLOCK) {
-                        // Bloque terminal alcanzado (05 80): Enviar ACK obligatorio de inmediato
-                        Log.d(TAG, "Fin de bloque de historial (05 80). Despachando ACK...")
-                        sendYcbtCommand(YcbtCommands.historyBlockAck(YcbtConstants.ACK_SUCCESS))
 
-                        val deferred = activeQueryDeferred
-                        if (deferred != null && !deferred.isCompleted) {
-                            val accumulated = synchronized(currentQueryBuffer) {
-                                currentQueryBuffer.toByteArray()
+                    if (frame.cmd == YcbtConstants.TERMINAL_BLOCK) {
+                        val accumulated = synchronized(currentQueryBuffer) {
+                            currentQueryBuffer.toByteArray()
+                        }
+                        var ackStatus = YcbtConstants.ACK_SUCCESS
+                        if (frame.payload.size >= 6 && accumulated.isNotEmpty()) {
+                            val totalBytes = YcbtUtils.readU16LE(frame.payload, 2)
+                            val expectedCrc = YcbtUtils.readU16LE(frame.payload, 4)
+                            val computedCrc = YcbtCrc16.calculate(accumulated, 0, accumulated.size)
+                            if (totalBytes == accumulated.size && expectedCrc != 0 && expectedCrc != computedCrc) {
+                                Log.w(TAG, "CRC historial (05 80) difiere [exp=0x%04X, calc=0x%04X], solicitando reenvío status=0x04".format(expectedCrc, computedCrc))
+                                ackStatus = 0x04
                             }
-                            deferred.complete(accumulated)
+                        }
+
+                        // Enviar ACK secuencial por GATT ANTES de completar el deferred para evitar colisiones con la siguiente consulta
+                        val deferred = activeQueryDeferred
+                        coroutineScope.launch(Dispatchers.IO) {
+                            Log.d(TAG, "Fin de bloque de historial (05 80). Enviando ACK=$ackStatus...")
+                            sendYcbtCommandSequential(YcbtCommands.historyBlockAck(ackStatus))
+                            delay(40L)
+                            if (deferred != null && !deferred.isCompleted) {
+                                deferred.complete(accumulated)
+                            }
                         }
                     } else if (isQuerySummaryPacket) {
                         // Paquete resumen de cabecera (10 bytes: numRegistros:2, totalPaquetes:4, totalBytes:4)
@@ -761,14 +914,14 @@ class RingBleManager(
                             (frame.payload[0].toInt() and 0xFF) or ((frame.payload[1].toInt() and 0xFF) shl 8)
                         } else 0
                         Log.i(TAG, "Resumen de consulta historial (05 %02X): records=$recordCount, payloadLen=${frame.payload.size}".format(cmdInt))
-                        
+
                         if (frame.payload.size <= 9 || recordCount == 0 || frame.isErrorCode) {
                             Log.d(TAG, "Sin registros almacenados para 05 %02X, completando consulta vacía".format(cmdInt))
                             activeQueryDeferred?.complete(ByteArray(0))
                         }
-                        // NOTA CLAVE: No agregamos este paquete de 10 bytes a currentQueryBuffer para no corromper los registros reales
+                        // No agregar cabecera resumen al buffer de registros reales
                     } else {
-                        // Chunk de datos reales de historial (ej: 0x11, 0x13, 0x15, 0x17, 0x18, 0x22, 0x26)
+                        // Chunk de datos reales de historial
                         synchronized(currentQueryBuffer) {
                             for (b in frame.payload) {
                                 currentQueryBuffer.add(b)
@@ -781,11 +934,15 @@ class RingBleManager(
                     // Notificaciones de control del dispositivo (0x04)
                     val cmdInt = frame.cmd.toInt() and 0xFF
                     Log.d("YCBT_RAW", "◄◄ DEV_CONTROL (04 %02X) payload=[%s]".format(cmdInt, frame.payload.joinToString("") { "%02X".format(it) }))
-                    
+
                     // Responder ACK mandatorio (0x04 <cmd> 0x00)
                     sendYcbtCommand(YcbtCommands.devControlPushAck(frame.cmd))
 
                     when (cmdInt) {
+                        0x03 -> {
+                            // dataType 1027: Obturador remoto desde el anillo
+                            coroutineScope.launch { _cameraShutterEventFlow.emit(Unit) }
+                        }
                         0x13 -> {
                             // dataType 1043: Muestra en tiempo real o resultado intermedio de medición puntual
                             if (frame.payload.size >= 3) {
@@ -801,7 +958,7 @@ class RingBleManager(
                                         if (frame.payload.size >= 4) {
                                             val sys = frame.payload[2].toInt() and 0xFF
                                             val dia = frame.payload[3].toInt() and 0xFF
-                                            if (sys in 50..240 && dia in 30..150) {
+                                            if (sys in 60..250 && dia in 30..160) {
                                                 coroutineScope.launch { _bloodPressureFlow.emit(Pair(sys, dia)) }
                                             }
                                         }
@@ -812,15 +969,28 @@ class RingBleManager(
                                             coroutineScope.launch { _spo2Flow.emit(spo2) }
                                         }
                                     }
+                                    3 -> { // Frecuencia respiratoria
+                                        val resp = frame.payload[2].toInt() and 0xFF
+                                        if (resp in 6..50) {
+                                            coroutineScope.launch { _respiratoryRateFlow.emit(resp) }
+                                        }
+                                    }
                                     4 -> { // Temperatura
                                         if (frame.payload.size >= 4) {
-                                            val tempInt = frame.payload[2].toInt() and 0xFF
-                                            val tempDec = frame.payload[3].toInt() and 0xFF
-                                            val temp = "$tempInt.$tempDec".toFloatOrNull() ?: (tempInt + (tempDec / 100f))
-                                            if (temp in 30.0f..45.0f) {
+                                            val temp = YcbtHealthDecoder.parseValidTemperature(
+                                                frame.payload[2].toInt() and 0xFF,
+                                                frame.payload[3].toInt() and 0xFF
+                                            )
+                                            if (temp != null) {
                                                 Log.i(TAG, "¡Temperatura recibida vía DevControl 1043: $temp °C!")
                                                 coroutineScope.launch { _temperatureFlow.emit(temp) }
                                             }
+                                        }
+                                    }
+                                    10 -> { // HRV
+                                        val hrv = frame.payload[2].toInt() and 0xFF
+                                        if (hrv in 1..200) {
+                                            coroutineScope.launch { _hrvFlow.emit(hrv) }
                                         }
                                     }
                                 }
@@ -833,44 +1003,31 @@ class RingBleManager(
                                 val result = frame.payload[1].toInt() and 0xFF
                                 val isSuccess = (result == 1)
                                 Log.i(TAG, "DeviceMeasurementResult (04 0E): measureType=$measureType, result=$result (success=$isSuccess)")
-                                
-                                coroutineScope.launch {
-                                    _spotMeasurementStatusFlow.emit(
-                                        SpotMeasurementStatus(
-                                            type = measureType,
-                                            isFinished = true,
-                                            isSuccess = isSuccess
-                                        )
-                                    )
-                                }
+
+                                spotPollingJob?.cancel()
+                                spotPollingJob = null
 
                                 if (isSuccess) {
-                                    // Medición exitosa: el anillo guardó el registro en memoria flash. Sincronizar bloque correspondiente
+                                    // Primero descargar 0x05 0x09 / 0x02 0x20 antes o junto al status de fin
+                                    coroutineScope.launch(Dispatchers.IO) {
+                                        syncAfterSpotMeasurement(measureType)
+                                        _spotMeasurementStatusFlow.emit(
+                                            SpotMeasurementStatus(
+                                                type = measureType,
+                                                isFinished = true,
+                                                isSuccess = true
+                                            )
+                                        )
+                                    }
+                                } else {
                                     coroutineScope.launch {
-                                        when (measureType) {
-                                            4 -> { // Temp
-                                                val tempBytes = queryHistoryBlock(YcbtConstants.QUERY_TEMP)
-                                                val records = YcbtHealthDecoder.decodeTemperature(tempBytes)
-                                                records.maxByOrNull { it.timestamp }?.let {
-                                                    Log.i(TAG, "Temperatura confirmada desde memoria flash: ${it.celsius} °C")
-                                                    _temperatureFlow.emit(it.celsius)
-                                                }
-                                            }
-                                            2 -> { // SpO2
-                                                val spo2Bytes = queryHistoryBlock(YcbtConstants.QUERY_SPO2)
-                                                val records = YcbtHealthDecoder.decodeSpo2(spo2Bytes)
-                                                records.maxByOrNull { it.timestamp }?.let {
-                                                    _spo2Flow.emit(it.percent)
-                                                }
-                                            }
-                                            0 -> { // HR
-                                                val hrBytes = queryHistoryBlock(YcbtConstants.QUERY_HEART_RATE)
-                                                val records = YcbtHealthDecoder.decodeHeartRate(hrBytes)
-                                                records.maxByOrNull { it.timestamp }?.let {
-                                                    _heartRateFlow.emit(HeartRateSample(bpm = it.bpm))
-                                                }
-                                            }
-                                        }
+                                        _spotMeasurementStatusFlow.emit(
+                                            SpotMeasurementStatus(
+                                                type = measureType,
+                                                isFinished = true,
+                                                isSuccess = false
+                                            )
+                                        )
                                     }
                                 }
                             }
@@ -900,31 +1057,41 @@ class RingBleManager(
                                     _spo2Flow.emit(event.percent)
                                 }
                                 is YcbtDecodedEvent.RealtimeBloodPressure -> {
-                                    _bloodPressureFlow.emit(Pair(event.systolic, event.diastolic))
+                                    if (event.systolic in 60..250 && event.diastolic in 30..160) {
+                                        _bloodPressureFlow.emit(Pair(event.systolic, event.diastolic))
+                                    }
+                                    event.bpm?.let { _heartRateFlow.emit(HeartRateSample(bpm = it)) }
+                                    event.hrv?.let { _hrvFlow.emit(it) }
+                                    event.spo2?.let { _spo2Flow.emit(it) }
+                                    event.tempCelsius?.let { _temperatureFlow.emit(it) }
                                 }
                                 is YcbtDecodedEvent.RealtimeTemperature -> {
                                     _temperatureFlow.emit(event.celsius)
                                 }
+                                is YcbtDecodedEvent.RealtimeRespiratoryRate -> {
+                                    _respiratoryRateFlow.emit(event.rpm)
+                                }
                                 is YcbtDecodedEvent.RealtimeComprehensive -> {
-                                    _consolidatedStepsFlow.emit(
-                                        StepsSample(
-                                            steps = event.steps.toInt(),
-                                            calories = event.calories.toInt(),
-                                            distanceMeters = event.distanceMeters.toInt()
+                                    if (event.steps > 0 || event.calories > 0 || event.distanceMeters > 0) {
+                                        _consolidatedStepsFlow.emit(
+                                            StepsSample(
+                                                steps = event.steps.toInt(),
+                                                calories = event.calories.toInt(),
+                                                distanceMeters = event.distanceMeters.toInt()
+                                            )
                                         )
-                                    )
+                                    }
                                     if (event.bpm in 35..230) {
                                         _heartRateFlow.emit(HeartRateSample(bpm = event.bpm))
                                     }
                                     if (event.spo2 in 70..100) {
                                         _spo2Flow.emit(event.spo2)
                                     }
-                                    if (event.systolic in 50..240 && event.diastolic in 30..150) {
+                                    if (event.systolic in 60..250 && event.diastolic in 30..160) {
                                         _bloodPressureFlow.emit(Pair(event.systolic, event.diastolic))
                                     }
-                                    if (event.tempCelsius != null && event.tempCelsius in 30.0f..45.0f) {
-                                        _temperatureFlow.emit(event.tempCelsius)
-                                    }
+                                    event.respiratoryRate?.let { _respiratoryRateFlow.emit(it) }
+                                    event.tempCelsius?.let { _temperatureFlow.emit(it) }
                                     _sensorContactFlow.emit(event.isWorn)
                                     if (event.batteryPercent != null) {
                                         _batteryFlow.emit(Pair(event.batteryPercent, false))
@@ -944,28 +1111,75 @@ class RingBleManager(
 
                 YcbtConstants.GROUP_GET -> {
                     val cmdInt = frame.cmd.toInt() and 0xFF
-                    if (cmdInt == (YcbtConstants.CMD_GET_REAL_TEMP.toInt() and 0xFF)) {
-                        // Respuesta a consulta puntual de temperatura dérmica (0x02 0x0E)
-                        val temp = YcbtHealthDecoder.decodeGetRealTemp(frame.payload)
-                        if (temp != null) {
-                            coroutineScope.launch {
-                                _temperatureFlow.emit(temp)
+                    when (cmdInt) {
+                        (YcbtConstants.CMD_GET_DEVICE_INFO.toInt() and 0xFF) -> {
+                            YcbtHealthDecoder.decodeDeviceInfo(frame.payload)?.let { info ->
+                                _deviceInfoFlow.value = info
+                                coroutineScope.launch {
+                                    _batteryFlow.emit(Pair(info.batteryPercent, info.isCharging))
+                                }
                             }
                         }
-                    } else if (cmdInt == (YcbtConstants.CMD_GET_DEVICE_SUPPORT_FUNCTION.toInt() and 0xFF)) {
-                        // Mapa de funciones y sensores soportados por el hardware
-                        val hexCaps = frame.payload.joinToString("") { "%02X".format(it) }
-                        Log.i(TAG, "Mapa de funciones de hardware soportadas por R99: $hexCaps")
-                    } else if ((cmdInt == 0x00 || cmdInt == 0x03) && frame.payload.isNotEmpty()) {
-                        val b0 = frame.payload[0].toInt() and 0xFF
-                        val b1 = if (frame.payload.size > 1) frame.payload[1].toInt() and 0xFF else -1
-                        val battery = when {
-                            b0 in 1..100 -> b0
-                            b1 in 1..100 -> b1
-                            else -> b0.coerceIn(0, 100)
+                        (YcbtConstants.CMD_GET_DEVICE_SUPPORT_FUNCTION.toInt() and 0xFF) -> {
+                            val caps = YcbtHealthDecoder.decodeDeviceSupportFunction(frame.payload)
+                            Log.i(TAG, "Capacidades R99 [${caps.rawHex}]: ${caps.toSummaryString()}")
+                            _deviceCapabilitiesFlow.value = caps
                         }
-                        coroutineScope.launch {
-                            _batteryFlow.emit(Pair(battery, false))
+                        (YcbtConstants.CMD_GET_REAL_TEMP.toInt() and 0xFF) -> {
+                            YcbtHealthDecoder.decodeGetRealTemp(frame.payload)?.let { temp ->
+                                coroutineScope.launch { _temperatureFlow.emit(temp) }
+                            }
+                        }
+                        (YcbtConstants.CMD_GET_REAL_BLOOD_OXYGEN.toInt() and 0xFF) -> {
+                            YcbtHealthDecoder.decodeGetRealBloodOxygen(frame.payload)?.let { spo2 ->
+                                coroutineScope.launch { _spo2Flow.emit(spo2) }
+                            }
+                        }
+                        (YcbtConstants.CMD_GET_ALL_REAL_DATA.toInt() and 0xFF) -> {
+                            YcbtHealthDecoder.decodeAllRealDataFromDevice(frame.payload)?.let { all ->
+                                coroutineScope.launch {
+                                    all.bpm?.let { _heartRateFlow.emit(HeartRateSample(bpm = it)) }
+                                    if (all.systolic != null && all.diastolic != null) {
+                                        _bloodPressureFlow.emit(Pair(all.systolic, all.diastolic))
+                                    }
+                                    all.spo2?.let { _spo2Flow.emit(it) }
+                                    all.respiratoryRate?.let { _respiratoryRateFlow.emit(it) }
+                                    all.tempCelsius?.let { _temperatureFlow.emit(it) }
+                                    if (all.steps > 0 || all.calories > 0 || all.distanceMeters > 0) {
+                                        _consolidatedStepsFlow.emit(
+                                            StepsSample(
+                                                steps = all.steps.toInt(),
+                                                calories = all.calories.toInt(),
+                                                distanceMeters = all.distanceMeters.toInt()
+                                            )
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                        0x03 -> {
+                            if (frame.payload.isNotEmpty()) {
+                                val battery = (frame.payload[0].toInt() and 0xFF).coerceIn(0, 100)
+                                coroutineScope.launch { _batteryFlow.emit(Pair(battery, false)) }
+                            }
+                        }
+                    }
+                }
+
+                YcbtConstants.GROUP_CUSTOMIZE -> {
+                    val cmdInt = frame.cmd.toInt() and 0xFF
+                    if (cmdInt == (YcbtConstants.CMD_CUSTOMIZE_WIT.toInt() and 0xFF) && frame.payload.size >= 2) {
+                        val opcode = frame.payload[0].toInt() and 0xFF
+                        if (opcode == 2) {
+                            val mask = frame.payload[1].toInt() and 0xFF
+                            _activeGestureModeFlow.value = when {
+                                (mask and 0x01) != 0 -> 1
+                                (mask and 0x02) != 0 -> 2
+                                (mask and 0x04) != 0 -> 3
+                                (mask and 0x08) != 0 -> 4
+                                (mask and 0x20) != 0 -> 6
+                                else -> 0
+                            }
                         }
                     }
                 }

@@ -25,9 +25,10 @@ val StatusGreen = Color(0xFF00E676)             // Steps & Normal Activity Emera
 val StatusAmber = Color(0xFFFF9100)             // Pressure & Alert Amber
 val OxygenCyan = Color(0xFF00E5FF)              // SpO2 Saturation Cyan
 val ThermalGold = Color(0xFFFFD600)             // Skin Temperature Gold
-val SleepIndigo = Color(0xFF7C4DFF)             // REM Sleep Neon Indigo
-val SleepDeep = Color(0xFF4A148C)               // Deep Sleep Royal Purple
-val SleepLight = Color(0xFF29B6F6)              // Light Sleep Sky Blue
+val SleepIndigo = Color(0xFF00E676)             // REM Sleep Vivid Emerald (high-contrast)
+val SleepRem = Color(0xFF00E676)                // REM Sleep Vivid Emerald
+val SleepDeep = Color(0xFF7C4DFF)               // Deep Sleep Electric Violet
+val SleepLight = Color(0xFF42A5F5)              // Light Sleep Sky Blue
 val SleepAwake = Color(0xFFFF6D00)              // Awake Alert Orange
 
 // Ring Metallic Hardware Shading

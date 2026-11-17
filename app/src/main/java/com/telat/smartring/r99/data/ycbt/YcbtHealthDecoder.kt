@@ -12,8 +12,16 @@ sealed class YcbtDecodedEvent {
     data class RealtimeStatus(val steps: Long, val calories: Long, val distanceMeters: Long) : YcbtDecodedEvent()
     data class RealtimeHeartRate(val bpm: Int) : YcbtDecodedEvent()
     data class RealtimeSpo2(val percent: Int) : YcbtDecodedEvent()
-    data class RealtimeBloodPressure(val systolic: Int, val diastolic: Int) : YcbtDecodedEvent()
+    data class RealtimeBloodPressure(
+        val systolic: Int,
+        val diastolic: Int,
+        val bpm: Int? = null,
+        val hrv: Int? = null,
+        val spo2: Int? = null,
+        val tempCelsius: Float? = null
+    ) : YcbtDecodedEvent()
     data class RealtimeTemperature(val celsius: Float) : YcbtDecodedEvent()
+    data class RealtimeRespiratoryRate(val rpm: Int) : YcbtDecodedEvent()
     data class RealtimeComprehensive(
         val steps: Long,
         val calories: Long,
@@ -22,6 +30,7 @@ sealed class YcbtDecodedEvent {
         val systolic: Int,
         val diastolic: Int,
         val spo2: Int,
+        val respiratoryRate: Int?,
         val tempCelsius: Float?,
         val isWorn: Boolean,
         val batteryPercent: Int?
@@ -43,15 +52,95 @@ data class YcbtTemperatureRecord(
     val celsius: Float
 )
 
+data class YcbtBloodPressureRecord(
+    val timestamp: Instant,
+    val systolic: Int,
+    val diastolic: Int
+)
+
+data class YcbtHrvRecord(
+    val timestamp: Instant,
+    val hrvMs: Int
+)
+
+data class YcbtRespiratoryRateRecord(
+    val timestamp: Instant,
+    val rpm: Int
+)
+
+data class YcbtDeviceInfo(
+    val deviceId: Int,
+    val firmwareVersion: String,
+    val batteryState: Int,
+    val batteryPercent: Int,
+    val hardwareType: Int
+) {
+    val isCharging: Boolean get() = batteryState == 2
+}
+
+data class YcbtDeviceCapabilities(
+    val hasStepCount: Boolean = false,
+    val hasSleep: Boolean = false,
+    val hasHeartRate: Boolean = false,
+    val hasBloodPressure: Boolean = false,
+    val hasBloodPressureCalibration: Boolean = false,
+    val hasSpo2: Boolean = false,
+    val hasRespiratoryRate: Boolean = false,
+    val hasHrv: Boolean = false,
+    val hasTemperature: Boolean = false,
+    val hasTempAxillaryTest: Boolean = false,
+    val hasTestHeart: Boolean = false,
+    val hasTestBlood: Boolean = false,
+    val hasTestSpo2: Boolean = false,
+    val hasTestTemp: Boolean = false,
+    val hasTestRespiratoryRate: Boolean = false,
+    val hasBloodSugar: Boolean = false,
+    val hasPressure: Boolean = false,
+    val hasFindDevice: Boolean = false,
+    val rawHex: String = ""
+) {
+    fun toSummaryString(): String {
+        val features = mutableListOf<String>()
+        if (hasStepCount) features.add("Pasos")
+        if (hasSleep) features.add("Sueño")
+        if (hasHeartRate || hasTestHeart) features.add("Pulso")
+        if (hasSpo2 || hasTestSpo2) features.add("SpO2")
+        if (hasTemperature || hasTestTemp || hasTempAxillaryTest) features.add("Temp")
+        if (hasBloodPressure || hasTestBlood) features.add("Presión")
+        if (hasHrv) features.add("HRV")
+        if (hasRespiratoryRate || hasTestRespiratoryRate) features.add("Resp")
+        if (hasPressure) features.add("Estrés")
+        if (hasBloodSugar) features.add("Glucosa")
+        return if (features.isEmpty()) "Estándar YCBT" else features.joinToString(" · ")
+    }
+}
+
+data class YcbtAllRealData(
+    val bpm: Int?,
+    val systolic: Int?,
+    val diastolic: Int?,
+    val spo2: Int?,
+    val respiratoryRate: Int?,
+    val tempCelsius: Float?,
+    val steps: Long,
+    val calories: Long,
+    val distanceMeters: Long
+)
+
 data class YcbtHistorySyncResult(
     val sportRecords: List<YcbtSportRecord> = emptyList(),
     val sleepSessions: List<YcbtSleepSession> = emptyList(),
     val heartRateRecords: List<YcbtHeartRateRecord> = emptyList(),
     val spo2Records: List<YcbtSpo2Record> = emptyList(),
-    val temperatureRecords: List<YcbtTemperatureRecord> = emptyList()
+    val temperatureRecords: List<YcbtTemperatureRecord> = emptyList(),
+    val bloodPressureRecords: List<YcbtBloodPressureRecord> = emptyList(),
+    val hrvRecords: List<YcbtHrvRecord> = emptyList(),
+    val respiratoryRateRecords: List<YcbtRespiratoryRateRecord> = emptyList()
 ) {
     val totalCount: Int
-        get() = sportRecords.size + sleepSessions.size + heartRateRecords.size + spo2Records.size + temperatureRecords.size
+        get() = sportRecords.size + sleepSessions.size + heartRateRecords.size +
+                spo2Records.size + temperatureRecords.size + bloodPressureRecords.size +
+                hrvRecords.size + respiratoryRateRecords.size
 }
 
 data class YcbtHeartRateRecord(
@@ -81,6 +170,16 @@ data class YcbtSleepSession(
 )
 
 object YcbtHealthDecoder {
+
+    /**
+     * Valida y formatea temperatura dérmica según DataUnpack + TemperatureActivity:
+     * Yucheng usa tempFloat == 15 (0x0F) como centinela de lectura inválida y concatena "$tempInt.$tempFloat".
+     */
+    fun parseValidTemperature(tempInt: Int, tempFloat: Int): Float? {
+        if (tempFloat == 15 || tempInt !in 32..43 || tempFloat !in 0..99) return null
+        val parsed = "$tempInt.$tempFloat".toFloatOrNull() ?: return null
+        return if (parsed in 32.0f..43.0f) parsed else null
+    }
 
     /**
      * Decodifica registros de historial deportivo/pasos (query 0x02, registros de 14 bytes)
@@ -170,6 +269,36 @@ object YcbtHealthDecoder {
     }
 
     /**
+     * Decodifica registros de presión arterial almacenados (query 0x08, registros de 8 bytes)
+     * Layout SmartHealth (DataUnpack case 8): [ts:u32 LE][isInflated:1B][sbp:1B@5][dbp:1B@6][hr:1B@7]
+     */
+    fun decodeBloodPressure(buffer: ByteArray): List<YcbtBloodPressureRecord> {
+        val records = mutableListOf<YcbtBloodPressureRecord>()
+        val stride = 8
+        var offset = 0
+
+        while (offset + stride <= buffer.size) {
+            val tsSec = YcbtUtils.readU32LE(buffer, offset)
+            val sbp = buffer[offset + 5].toInt() and 0xFF
+            val dbp = buffer[offset + 6].toInt() and 0xFF
+            val pulsePressure = sbp - dbp
+
+            if (tsSec > 0 && sbp in 60..250 && dbp in 30..160 && pulsePressure in 10..90) {
+                records.add(
+                    YcbtBloodPressureRecord(
+                        timestamp = YcbtUtils.toInstant(tsSec),
+                        systolic = sbp,
+                        diastolic = dbp
+                    )
+                )
+            }
+            offset += stride
+        }
+
+        return records
+    }
+
+    /**
      * Decodifica registros de temperatura dérmica almacenados (query 0x1E, registros de 7 bytes)
      * Layout SmartHealth (case 30): [ts:u32 LE][type:1B][tempInt:1B][tempDec:1B]
      */
@@ -182,9 +311,9 @@ object YcbtHealthDecoder {
             val tsSec = YcbtUtils.readU32LE(buffer, offset)
             val tempInt = buffer[offset + 5].toInt() and 0xFF
             val tempDec = buffer[offset + 6].toInt() and 0xFF
-            val celsius = tempInt + (tempDec / 100f)
+            val celsius = parseValidTemperature(tempInt, tempDec)
 
-            if (tsSec > 0 && celsius in 30.0f..45.0f) {
+            if (tsSec > 0 && celsius != null) {
                 records.add(
                     YcbtTemperatureRecord(
                         timestamp = YcbtUtils.toInstant(tsSec),
@@ -199,25 +328,124 @@ object YcbtHealthDecoder {
     }
 
     /**
+     * Decodifica información de hardware, firmware y batería (Group 0x02, Cmd 0x00 / DataUnpack.unpackDeviceInfoData).
+     * bArr[0..1]=deviceId, bArr[2]=subVer, bArr[3]=mainVer, bArr[4]=batteryState (2=charging), bArr[5]=batteryPercent.
+     */
+    fun decodeDeviceInfo(payload: ByteArray): YcbtDeviceInfo? {
+        if (payload.size < 6) return null
+        val deviceId = YcbtUtils.readU16LE(payload, 0)
+        val subVer = payload[2].toInt() and 0xFF
+        val mainVer = payload[3].toInt() and 0xFF
+        val batteryState = payload[4].toInt() and 0xFF
+        val batteryPercent = (payload[5].toInt() and 0xFF).coerceIn(0, 100)
+        val versionStr = if (subVer < 10) "$mainVer.0$subVer" else "$mainVer.$subVer"
+        val hardwareType = if (payload.size >= 24) payload[18].toInt() and 0xFF else 1
+        return YcbtDeviceInfo(
+            deviceId = deviceId,
+            firmwareVersion = versionStr,
+            batteryState = batteryState,
+            batteryPercent = batteryPercent,
+            hardwareType = hardwareType
+        )
+    }
+
+    /**
+     * Decodifica el mapa exacto de capacidades soportadas por el anillo
+     * (Group 0x02, Cmd 0x01 / DataUnpack.saveDeviceSupportFunctionData).
+     */
+    fun decodeDeviceSupportFunction(payload: ByteArray): YcbtDeviceCapabilities {
+        if (payload.size < 12) {
+            return YcbtDeviceCapabilities(rawHex = payload.joinToString("") { "%02X".format(it) })
+        }
+        val b0 = payload[0].toInt() and 0xFF
+        val b1 = payload[1].toInt() and 0xFF
+        val b6 = payload[6].toInt() and 0xFF
+        val b8 = payload[8].toInt() and 0xFF
+        val b15 = if (payload.size >= 18) payload[15].toInt() and 0xFF else 0
+        val b17 = if (payload.size >= 18) payload[17].toInt() and 0xFF else 0
+        val b22 = if (payload.size >= 23) payload[22].toInt() and 0xFF else 0
+
+        return YcbtDeviceCapabilities(
+            hasStepCount = ((b0 shr 7) and 1) != 0,
+            hasSleep = ((b0 shr 6) and 1) != 0,
+            hasHeartRate = ((b0 shr 3) and 1) != 0,
+            hasBloodPressure = (b0 and 1) != 0,
+            hasBloodPressureCalibration = ((b8 shr 4) and 1) != 0,
+            hasSpo2 = ((b1 shr 3) and 1) != 0,
+            hasRespiratoryRate = ((b1 shr 2) and 1) != 0,
+            hasHrv = ((b1 shr 1) and 1) != 0,
+            hasTemperature = (b8 and 1) != 0,
+            hasTempAxillaryTest = ((b8 shr 6) and 1) != 0,
+            hasTestHeart = ((b15 shr 1) and 1) != 0,
+            hasTestBlood = ((b15 shr 2) and 1) != 0,
+            hasTestSpo2 = ((b15 shr 3) and 1) != 0,
+            hasTestTemp = ((b15 shr 4) and 1) != 0,
+            hasTestRespiratoryRate = ((b15 shr 5) and 1) != 0,
+            hasBloodSugar = ((b17 shr 3) and 1) != 0,
+            hasPressure = ((b22 shr 6) and 1) != 0,
+            hasFindDevice = ((b6 shr 4) and 1) != 0,
+            rawHex = payload.joinToString("") { "%02X".format(it) }
+        )
+    }
+
+    /**
+     * Decodifica snapshot instantáneo completo del anillo (0x02 0x20 / DataUnpack.unpackGetAllRealDataFromDevice).
+     */
+    fun decodeAllRealDataFromDevice(payload: ByteArray): YcbtAllRealData? {
+        if (payload.size < 14) return null
+        val hr = payload[0].toInt() and 0xFF
+        val sbp = payload[1].toInt() and 0xFF
+        val dbp = payload[2].toInt() and 0xFF
+        val spo2 = payload[3].toInt() and 0xFF
+        val respRate = payload[4].toInt() and 0xFF
+        val temp = parseValidTemperature(payload[5].toInt() and 0xFF, payload[6].toInt() and 0xFF)
+        val steps = YcbtUtils.readU24LE(payload, 7).toLong()
+        val cal = YcbtUtils.readU16LE(payload, 10).toLong()
+        val dist = YcbtUtils.readU16LE(payload, 12).toLong()
+        val validBp = sbp in 60..250 && dbp in 30..160 && (sbp - dbp) in 10..90
+        return YcbtAllRealData(
+            bpm = if (hr in 35..230) hr else null,
+            systolic = if (validBp) sbp else null,
+            diastolic = if (validBp) dbp else null,
+            spo2 = if (spo2 in 70..100) spo2 else null,
+            respiratoryRate = if (respRate in 6..50) respRate else null,
+            tempCelsius = temp,
+            steps = steps,
+            calories = cal,
+            distanceMeters = dist
+        )
+    }
+
+    /**
+     * Decodifica respuesta de SpO2 en tiempo real (0x02 0x11 / DataUnpack.unpackGetRealBloodOxygen).
+     * Layout: [bloodOxygenIsTest:1B][bloodOxygenValue:1B].
+     */
+    fun decodeGetRealBloodOxygen(payload: ByteArray): Int? {
+        if (payload.size >= 2) {
+            val val1 = payload[1].toInt() and 0xFF
+            if (val1 in 70..100) return val1
+        }
+        if (payload.isNotEmpty()) {
+            val val0 = payload[0].toInt() and 0xFF
+            if (val0 in 70..100) return val0
+        }
+        return null
+    }
+
+    /**
      * Decodifica la respuesta de consulta puntual de temperatura dérmica
      * (YCBTClient.getRealTemp / Group 0x02, Cmd 0x0E / DataUnpack.unpackGetRealTemp).
      * Soporta tanto payload directo [tempInt:1B, tempFloat:1B] como con byte de status inicial.
      */
     fun decodeGetRealTemp(payload: ByteArray): Float? {
         if (payload.size >= 2) {
-            val tempInt = payload[0].toInt() and 0xFF
-            val tempDec = payload[1].toInt() and 0xFF
-            val celsius = "$tempInt.$tempDec".toFloatOrNull() ?: (tempInt + (tempDec / 100f))
-            if (celsius in 30.0f..45.0f) {
-                return celsius
+            parseValidTemperature(payload[0].toInt() and 0xFF, payload[1].toInt() and 0xFF)?.let {
+                return it
             }
             // Si el primer byte era un código de estado (ej: 0x00=OK) y la temperatura viene en bytes [1..2]
             if (payload.size >= 3) {
-                val altTempInt = payload[1].toInt() and 0xFF
-                val altTempDec = payload[2].toInt() and 0xFF
-                val altCelsius = "$altTempInt.$altTempDec".toFloatOrNull() ?: (altTempInt + (altTempDec / 100f))
-                if (altCelsius in 30.0f..45.0f) {
-                    return altCelsius
+                parseValidTemperature(payload[1].toInt() and 0xFF, payload[2].toInt() and 0xFF)?.let {
+                    return it
                 }
             }
         }
@@ -234,10 +462,7 @@ object YcbtHealthDecoder {
             // dataType 1043: [type:1B][state:1B][tempInt:1B][tempFloat:1B] cuando type == 4 (Temp)
             val type = payload[0].toInt() and 0xFF
             if (type == 4) {
-                val tempInt = payload[2].toInt() and 0xFF
-                val tempFloat = payload[3].toInt() and 0xFF
-                val temp = "$tempInt.$tempFloat".toFloatOrNull() ?: (tempInt + (tempFloat / 100f))
-                if (temp in 30.0f..45.0f) return temp
+                return parseValidTemperature(payload[2].toInt() and 0xFF, payload[3].toInt() and 0xFF)
             }
         } else if (cmdInt == 0x0E && payload.size >= 2) {
             // dataType 1038: [measureType:1B][result:1B] (measureType 4 = Temp, result 1 = Success)
@@ -365,42 +590,53 @@ object YcbtHealthDecoder {
                 } else null
             }
             0x03 -> {
-                // Presión arterial en vivo [systolic: 1B][diastolic: 1B]
-                // Si la longitud supera 6 bytes, contiene además temperatura dérmica (DataUnpack.unpackRealBloodData)
+                // DataUnpack.unpackRealBloodData: [sbp:1B][dbp:1B][hr:1B][hrv:1B?][spo2:1B?][tempInt:1B?][tempFloat:1B?]
                 if (payload.size >= 2) {
                     val sys = payload[0].toInt() and 0xFF
                     val dia = payload[1].toInt() and 0xFF
-                    if (sys in 50..240 && dia in 30..150) {
-                        YcbtDecodedEvent.RealtimeBloodPressure(sys, dia)
+                    val hr = if (payload.size >= 3) (payload[2].toInt() and 0xFF).takeIf { it in 35..230 } else null
+                    val hrv = if (payload.size > 3) (payload[3].toInt() and 0xFF).takeIf { it in 10..200 } else null
+                    val spo2 = if (payload.size > 4) (payload[4].toInt() and 0xFF).takeIf { it in 70..100 } else null
+                    val temp = if (payload.size > 6) {
+                        parseValidTemperature(payload[5].toInt() and 0xFF, payload[6].toInt() and 0xFF)
+                    } else null
+
+                    val validBp = sys in 60..250 && dia in 30..160 && (sys - dia) in 10..90
+                    if (validBp || hr != null || hrv != null || spo2 != null || temp != null) {
+                        YcbtDecodedEvent.RealtimeBloodPressure(
+                            systolic = if (validBp) sys else 0,
+                            diastolic = if (validBp) dia else 0,
+                            bpm = hr,
+                            hrv = hrv,
+                            spo2 = spo2,
+                            tempCelsius = temp
+                        )
                     } else null
                 } else null
             }
             0x04 -> {
-                // Temperatura corporal en vivo
-                if (payload.size >= 2) {
-                    val integerPart = payload[0].toInt() and 0xFF
-                    val decimalPart = payload[1].toInt() and 0xFF
-                    val temp = integerPart + (decimalPart / 100f)
-                    if (temp in 30.0f..45.0f) {
-                        YcbtDecodedEvent.RealtimeTemperature(temp)
-                    } else null
+                // 0x06 0x04 es Real_UploadPPG (onda óptica raw, NO temperatura)
+                null
+            }
+            0x07 -> {
+                // Frecuencia respiratoria en vivo (Real_UploadRespiratoryRate)
+                if (payload.isNotEmpty()) {
+                    val rpm = payload[0].toInt() and 0xFF
+                    if (rpm in 6..50) YcbtDecodedEvent.RealtimeRespiratoryRate(rpm) else null
                 } else null
             }
             0x0A -> {
                 // Paquete integral en tiempo real (SmartHealth Real_UploadComprehensive / dataType 1546)
                 if (payload.size >= 14) {
-                    val steps = (payload[0].toLong() and 0xFF) or
-                            ((payload[1].toLong() and 0xFF) shl 8) or
-                            ((payload[2].toLong() and 0xFF) shl 16)
-                    val dist = (payload[3].toLong() and 0xFF) or ((payload[4].toLong() and 0xFF) shl 8)
-                    val cal = (payload[5].toLong() and 0xFF) or ((payload[6].toLong() and 0xFF) shl 8)
+                    val steps = YcbtUtils.readU24LE(payload, 0).toLong()
+                    val dist = YcbtUtils.readU16LE(payload, 3).toLong()
+                    val cal = YcbtUtils.readU16LE(payload, 5).toLong()
                     val hr = payload[7].toInt() and 0xFF
                     val sys = payload[8].toInt() and 0xFF
                     val dia = payload[9].toInt() and 0xFF
                     val spo2 = payload[10].toInt() and 0xFF
-                    val tempInt = payload[12].toInt() and 0xFF
-                    val tempFloat = payload[13].toInt() and 0xFF
-                    val temp = if (tempInt in 30..45) tempInt + (tempFloat / 100f) else null
+                    val respRate = (payload[11].toInt() and 0xFF).takeIf { it in 6..50 }
+                    val temp = parseValidTemperature(payload[12].toInt() and 0xFF, payload[13].toInt() and 0xFF)
                     val isWorn = if (payload.size > 14) (payload[14].toInt() and 0xFF) != 0 else true
                     val battery = if (payload.size > 15) (payload[15].toInt() and 0xFF).coerceIn(0, 100) else null
 
@@ -412,6 +648,7 @@ object YcbtHealthDecoder {
                         systolic = sys,
                         diastolic = dia,
                         spo2 = spo2,
+                        respiratoryRate = respRate,
                         tempCelsius = temp,
                         isWorn = isWorn,
                         batteryPercent = battery
@@ -438,8 +675,10 @@ object YcbtHealthDecoder {
     }
 
     /**
-     * Decodifica registros combinados de salud (query 0x09, registros de 20 bytes)
-     * Layout: [ts:u32 LE][steps:u16 LE@4][hr:1B@6][sys:1B@7][dia:1B@8][spo2:1B@9]...
+     * Decodifica registros combinados de salud (query 0x09 Health_HistoryAll, registros de 20 bytes)
+     * Layout DataUnpack (case 9):
+     * [ts:u32 LE@0][steps:u16 LE@4][hr:1B@6][sys:1B@7][dia:1B@8][spo2:1B@9]
+     * [resp:1B@10][hrv:1B@11][cvrr:1B@12][tempInt:1B@13][tempFloat:1B@14][fatInt:1B@15][fatFloat:1B@16][sugar:1B@17]
      */
     fun decodeCombinedVitals(buffer: ByteArray): List<YcbtCombinedVitalsRecord> {
         val records = mutableListOf<YcbtCombinedVitalsRecord>()
@@ -450,12 +689,17 @@ object YcbtHealthDecoder {
             val tsSec = YcbtUtils.readU32LE(buffer, offset)
             val steps = YcbtUtils.readU16LE(buffer, offset + 4)
             val hr = buffer[offset + 6].toInt() and 0xFF
+            val sys = buffer[offset + 7].toInt() and 0xFF
+            val dia = buffer[offset + 8].toInt() and 0xFF
             val spo2 = buffer[offset + 9].toInt() and 0xFF
+            val respRate = buffer[offset + 10].toInt() and 0xFF
+            val hrv = buffer[offset + 11].toInt() and 0xFF
+            val cvrr = buffer[offset + 12].toInt() and 0xFF
             val tempInt = buffer[offset + 13].toInt() and 0xFF
             val tempFloat = buffer[offset + 14].toInt() and 0xFF
-            val tempCelsius = if (tempInt in 30..45) {
-                "$tempInt.$tempFloat".toFloatOrNull() ?: (tempInt + (tempFloat / 100f))
-            } else null
+            val bloodSugar = buffer[offset + 17].toInt() and 0xFF
+            val tempCelsius = parseValidTemperature(tempInt, tempFloat)
+            val validBp = sys in 60..250 && dia in 30..160 && (sys - dia) in 10..90
 
             if (tsSec > 0) {
                 records.add(
@@ -463,8 +707,14 @@ object YcbtHealthDecoder {
                         timestamp = YcbtUtils.toInstant(tsSec),
                         steps = steps,
                         heartRate = if (hr in 35..230) hr else null,
+                        systolic = if (validBp) sys else null,
+                        diastolic = if (validBp) dia else null,
                         spo2 = if (spo2 in 70..100) spo2 else null,
-                        tempCelsius = tempCelsius
+                        respiratoryRate = if (respRate in 6..50) respRate else null,
+                        hrv = if (hrv in 1..200) hrv else null,
+                        cvrr = if (cvrr in 1..200) cvrr else null,
+                        tempCelsius = tempCelsius,
+                        bloodSugarRaw = if (bloodSugar in 11..333) bloodSugar else null
                     )
                 )
             }
@@ -478,7 +728,13 @@ data class YcbtCombinedVitalsRecord(
     val timestamp: Instant,
     val steps: Int,
     val heartRate: Int?,
+    val systolic: Int? = null,
+    val diastolic: Int? = null,
     val spo2: Int?,
-    val tempCelsius: Float? = null
+    val respiratoryRate: Int? = null,
+    val hrv: Int? = null,
+    val cvrr: Int? = null,
+    val tempCelsius: Float? = null,
+    val bloodSugarRaw: Int? = null
 )
 
