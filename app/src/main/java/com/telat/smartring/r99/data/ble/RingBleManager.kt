@@ -142,6 +142,14 @@ class RingBleManager(
     private val _sensorContactFlow = MutableSharedFlow<Boolean>(extraBufferCapacity = 16)
     val sensorContactFlow: SharedFlow<Boolean> = _sensorContactFlow.asSharedFlow()
 
+    data class SpotMeasurementStatus(
+        val type: Int,
+        val isFinished: Boolean,
+        val isSuccess: Boolean
+    )
+    private val _spotMeasurementStatusFlow = MutableSharedFlow<SpotMeasurementStatus>(extraBufferCapacity = 16)
+    val spotMeasurementStatusFlow: SharedFlow<SpotMeasurementStatus> = _spotMeasurementStatusFlow.asSharedFlow()
+
     private val _rawLogsFlow = MutableSharedFlow<String>(extraBufferCapacity = 128)
     val rawLogsFlow: SharedFlow<String> = _rawLogsFlow.asSharedFlow()
 
@@ -823,8 +831,20 @@ class RingBleManager(
                             if (frame.payload.size >= 2) {
                                 val measureType = frame.payload[0].toInt() and 0xFF
                                 val result = frame.payload[1].toInt() and 0xFF
-                                Log.i(TAG, "DeviceMeasurementResult (04 0E): measureType=$measureType, result=$result (1=Éxito)")
-                                if (result == 1) {
+                                val isSuccess = (result == 1)
+                                Log.i(TAG, "DeviceMeasurementResult (04 0E): measureType=$measureType, result=$result (success=$isSuccess)")
+                                
+                                coroutineScope.launch {
+                                    _spotMeasurementStatusFlow.emit(
+                                        SpotMeasurementStatus(
+                                            type = measureType,
+                                            isFinished = true,
+                                            isSuccess = isSuccess
+                                        )
+                                    )
+                                }
+
+                                if (isSuccess) {
                                     // Medición exitosa: el anillo guardó el registro en memoria flash. Sincronizar bloque correspondiente
                                     coroutineScope.launch {
                                         when (measureType) {

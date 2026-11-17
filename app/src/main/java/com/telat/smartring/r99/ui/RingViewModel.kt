@@ -454,7 +454,6 @@ class RingViewModel(application: Application) : AndroidViewModel(application) {
         if (_uiState.value.isMeasuringHeartRate) return
 
         viewModelScope.launch {
-            val initialBpm = _uiState.value.currentHeartRate
             _uiState.update {
                 it.copy(
                     isMeasuringHeartRate = true,
@@ -462,24 +461,31 @@ class RingViewModel(application: Application) : AndroidViewModel(application) {
                     statusMessage = "Midiendo pulso cardíaco en tiempo real... (Sensor PPG activo)"
                 )
             }
-            bleManager.startSpotMeasurement(YcbtConstants.MEASURE_MODE_HEART_RATE)
-            
-            var receivedRealSample = false
-            for (i in 1..20) {
-                delay(1000)
-                if (_uiState.value.currentHeartRate != initialBpm && _uiState.value.currentHeartRate > 0) {
-                    receivedRealSample = true
-                    break
+
+            val job = launch {
+                bleManager.heartRateFlow.collect { sample ->
+                    if (sample.bpm in 35..230) {
+                        _uiState.update {
+                            it.copy(
+                                currentHeartRate = sample.bpm,
+                                lastHeartRateTime = System.currentTimeMillis(),
+                                statusMessage = "Pulso detectado: ${sample.bpm} BPM"
+                            )
+                        }
+                    }
                 }
             }
+
+            bleManager.startSpotMeasurement(YcbtConstants.MEASURE_MODE_HEART_RATE)
+            delay(20_000L)
+            job.cancel()
             bleManager.stopSpotMeasurement(YcbtConstants.MEASURE_MODE_HEART_RATE)
+
             _uiState.update {
                 it.copy(
                     isMeasuringHeartRate = false,
-                    statusMessage = if (receivedRealSample) {
-                        "¡Pulso real detectado: ${it.currentHeartRate} BPM!"
-                    } else if (it.currentHeartRate > 0) {
-                        "Pulso confirmado: ${it.currentHeartRate} BPM"
+                    statusMessage = if (it.currentHeartRate > 0) {
+                        "¡Pulso confirmado: ${it.currentHeartRate} BPM!"
                     } else {
                         "Sin lectura: coloca el anillo firmemente en tu dedo e inténtalo de nuevo"
                     }
@@ -496,7 +502,6 @@ class RingViewModel(application: Application) : AndroidViewModel(application) {
         if (_uiState.value.isMeasuringSpo2) return
 
         viewModelScope.launch {
-            val initialSpo2 = _uiState.value.currentSpo2
             _uiState.update {
                 it.copy(
                     isMeasuringSpo2 = true,
@@ -504,21 +509,30 @@ class RingViewModel(application: Application) : AndroidViewModel(application) {
                     statusMessage = "Midiendo SpO2 (Sensor óptico infrarrojo)... Mantén la mano en reposo"
                 )
             }
-            bleManager.startSpotMeasurement(YcbtConstants.MEASURE_MODE_SPO2)
 
-            var receivedRealSample = false
-            for (i in 1..25) {
-                delay(1000)
-                if (_uiState.value.currentSpo2 != initialSpo2 && (_uiState.value.currentSpo2 ?: 0) > 0) {
-                    receivedRealSample = true
-                    break
+            val job = launch {
+                bleManager.spo2Flow.collect { spo2 ->
+                    if (spo2 in 70..100) {
+                        _uiState.update {
+                            it.copy(
+                                currentSpo2 = spo2,
+                                lastSpo2Time = System.currentTimeMillis(),
+                                statusMessage = "Oxígeno SpO2: $spo2%"
+                            )
+                        }
+                    }
                 }
             }
+
+            bleManager.startSpotMeasurement(YcbtConstants.MEASURE_MODE_SPO2)
+            delay(22_000L)
+            job.cancel()
             bleManager.stopSpotMeasurement(YcbtConstants.MEASURE_MODE_SPO2)
+
             _uiState.update {
                 it.copy(
                     isMeasuringSpo2 = false,
-                    statusMessage = if (receivedRealSample || (it.currentSpo2 ?: 0) > 0) {
+                    statusMessage = if ((it.currentSpo2 ?: 0) > 0) {
                         "Oxígeno SpO2 registrado: ${it.currentSpo2}%"
                     } else {
                         "Sin lectura de SpO2: asegúrate de no mover el dedo"
@@ -536,7 +550,6 @@ class RingViewModel(application: Application) : AndroidViewModel(application) {
         if (_uiState.value.isMeasuringBloodPressure) return
 
         viewModelScope.launch {
-            val initialSys = _uiState.value.currentBloodPressureSys
             _uiState.update {
                 it.copy(
                     isMeasuringBloodPressure = true,
@@ -544,21 +557,31 @@ class RingViewModel(application: Application) : AndroidViewModel(application) {
                     statusMessage = "Estimando presión arterial... Mantén la mano quieta"
                 )
             }
-            bleManager.startSpotMeasurement(0x01.toByte())
 
-            var receivedRealSample = false
-            for (i in 1..25) {
-                delay(1000)
-                if (_uiState.value.currentBloodPressureSys != initialSys && (_uiState.value.currentBloodPressureSys ?: 0) > 0) {
-                    receivedRealSample = true
-                    break
+            val job = launch {
+                bleManager.bloodPressureFlow.collect { bp ->
+                    if (bp.first in 50..240 && bp.second in 30..150) {
+                        _uiState.update {
+                            it.copy(
+                                currentBloodPressureSys = bp.first,
+                                currentBloodPressureDia = bp.second,
+                                lastBloodPressureTime = System.currentTimeMillis(),
+                                statusMessage = "Presión arterial: ${bp.first}/${bp.second} mmHg"
+                            )
+                        }
+                    }
                 }
             }
-            bleManager.stopSpotMeasurement(0x01.toByte())
+
+            bleManager.startSpotMeasurement(YcbtConstants.MEASURE_MODE_BP)
+            delay(22_000L)
+            job.cancel()
+            bleManager.stopSpotMeasurement(YcbtConstants.MEASURE_MODE_BP)
+
             _uiState.update {
                 it.copy(
                     isMeasuringBloodPressure = false,
-                    statusMessage = if (receivedRealSample || (it.currentBloodPressureSys ?: 0) > 0) {
+                    statusMessage = if ((it.currentBloodPressureSys ?: 0) > 0) {
                         "Presión arterial estimada: ${it.currentBloodPressureSys}/${it.currentBloodPressureDia} mmHg"
                     } else {
                         "Sin lectura: coloca el anillo con el sensor hacia la palma del dedo"
@@ -576,7 +599,6 @@ class RingViewModel(application: Application) : AndroidViewModel(application) {
         if (_uiState.value.isMeasuringTemperature) return
 
         viewModelScope.launch {
-            val initialTemp = _uiState.value.currentTemperatureCelsius
             _uiState.update {
                 it.copy(
                     isMeasuringTemperature = true,
@@ -584,22 +606,30 @@ class RingViewModel(application: Application) : AndroidViewModel(application) {
                     statusMessage = "Iniciando sensor térmico y leyendo temperatura dérmica..."
                 )
             }
-            // Disparar comando de medición puntual de temperatura en anillo (0x03 0x2F mode=4)
-            bleManager.startTemperatureMeasurement()
 
-            var receivedRealSample = false
-            for (i in 1..25) {
-                delay(1000)
-                if (_uiState.value.currentTemperatureCelsius != initialTemp && (_uiState.value.currentTemperatureCelsius ?: 0f) > 0f) {
-                    receivedRealSample = true
-                    break
+            val job = launch {
+                bleManager.temperatureFlow.collect { temp ->
+                    if (temp in 30.0f..45.0f) {
+                        _uiState.update {
+                            it.copy(
+                                currentTemperatureCelsius = temp,
+                                lastTemperatureTime = System.currentTimeMillis(),
+                                statusMessage = "Temperatura: ${String.format(Locale.getDefault(), "%.1f", temp)} °C"
+                            )
+                        }
+                    }
                 }
             }
+
+            bleManager.startTemperatureMeasurement()
+            delay(22_000L)
+            job.cancel()
             bleManager.stopTemperatureMeasurement()
+
             _uiState.update {
                 it.copy(
                     isMeasuringTemperature = false,
-                    statusMessage = if (receivedRealSample || (it.currentTemperatureCelsius ?: 0f) > 0f) {
+                    statusMessage = if ((it.currentTemperatureCelsius ?: 0f) > 0f) {
                         "Temperatura capturada: ${String.format(Locale.getDefault(), "%.1f", it.currentTemperatureCelsius)} °C"
                     } else {
                         "Sin lectura térmica: coloca el sensor del anillo en contacto firme con la piel"

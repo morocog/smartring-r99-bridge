@@ -181,8 +181,8 @@ class YcbtFrameAssembler {
             val totalLength = (buffer[2].toInt() and 0xFF) or ((buffer[3].toInt() and 0xFF) shl 8)
             val group = buffer[0]
 
-            // Validación de cabecera plausible (grupos 0x01 al 0x06, longitud mínima 6 bytes y máxima 1024)
-            if (group < 0x01 || group > 0x06 || totalLength < 6 || totalLength > 1024) {
+            // Validación de cabecera plausible (grupos 0x01 al 0x14 y 0x7E OtaUI, longitud mínima 6 bytes y máxima 1024)
+            if (group < 0x01 || (group > 0x14 && group != 0x7E.toByte()) || totalLength < 6 || totalLength > 1024) {
                 buffer.removeAt(0) // Resincronizar descartando un byte corrupto
                 continue
             }

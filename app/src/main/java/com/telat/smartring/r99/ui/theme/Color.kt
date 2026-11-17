@@ -2,19 +2,35 @@ package com.telat.smartring.r99.ui.theme
 
 import androidx.compose.ui.graphics.Color
 
-val TelatBlue = Color(0xFF3284C6)
-val TelatOrange = Color(0xFFEB5B27)
-val TelatYellow = Color(0xFFFECA66)
+// Telat Corporate Branding
+val TelatBlue = Color(0xFF00E5FF)       // Electric Cyan / Bio-blue
+val TelatOrange = Color(0xFFFF9100)     // Vivid Neon Amber
+val TelatYellow = Color(0xFFFFD600)     // Solar Gold
 
-val DarkBackground = Color(0xFF111114)
-val DarkSurface = Color(0xFF1B1B22)
-val DarkSurfaceElevated = Color(0xFF262630)
-val DarkBorder = Color(0xFF33333F)
+// OLED Deep Canvas System
+val DarkBackground = Color(0xFF08090C)          // True OLED deep space black
+val DarkSurface = Color(0xFF11141E)             // Frosted dark slate surface
+val DarkSurfaceElevated = Color(0xFF191E2C)     // Elevated bento card surface
+val DarkBorder = Color(0xFF232A3E)              // Subtle 1px structural border
+val DarkBorderHighlight = Color(0xFF353E5C)     // Active focus border
 
-val TextPrimary = Color(0xFFFFFFFF)
-val TextSecondary = Color(0xFFE2E8F0)
-val TextMuted = Color(0xFFCBD5E1)
+// High-Legibility Typography
+val TextPrimary = Color(0xFFF8FAFC)             // Pure crisp white
+val TextSecondary = Color(0xFF94A3B8)           // Slate muted secondary
+val TextMuted = Color(0xFF64748B)               // Deep tertiary label text
 
-val StatusGreen = Color(0xFF22C55E)
-val StatusAmber = Color(0xFFF59E0B)
-val StatusRed = Color(0xFFEF4444)
+// Bio-Metric Accents (Medical / Wearable Neon Standards)
+val StatusRed = Color(0xFFFF3366)               // Heart Rate / ECG Crimson
+val StatusGreen = Color(0xFF00E676)             // Steps & Normal Activity Emerald
+val StatusAmber = Color(0xFFFF9100)             // Pressure & Alert Amber
+val OxygenCyan = Color(0xFF00E5FF)              // SpO2 Saturation Cyan
+val ThermalGold = Color(0xFFFFD600)             // Skin Temperature Gold
+val SleepIndigo = Color(0xFF7C4DFF)             // REM Sleep Neon Indigo
+val SleepDeep = Color(0xFF4A148C)               // Deep Sleep Royal Purple
+val SleepLight = Color(0xFF29B6F6)              // Light Sleep Sky Blue
+val SleepAwake = Color(0xFFFF6D00)              // Awake Alert Orange
+
+// Ring Metallic Hardware Shading
+val TitaniumRingDark = Color(0xFF131722)
+val TitaniumRingLight = Color(0xFF2A3147)
+val RingGlowActive = Color(0xFF00E5FF)
